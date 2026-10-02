@@ -12,14 +12,17 @@ const SRC_DIR = path.resolve(__dirname, "..", "..", "src");
 const COMPAT_DIR = path.join(SRC_DIR, "app", "compat");
 
 // Legacy-module path fragments that may only be referenced from inside compat/.
-// The app/index markers are deliberately anchored to dot-dot-only paths
-// ("../app", "../../../app.js", "../index.js", ...) so they only match a climb
-// up to the backend-root legacy files — never "./app" (src/app.ts itself) or
-// "./app/database/..." (this tree's own subdirectories).
+// All markers are anchored to dot-dot-only paths ("../middleware/...",
+// "../../../routes/...", "../../../app.js", "../index.js", ...) so they only
+// match a climb up to the backend-root legacy files — never a local
+// subdirectory of this tree such as "./app/middleware/..." (Stage 5's own
+// src/app/middleware/) or "./app/database/...". A plain "/middleware/"
+// substring check would have been a false positive the moment Stage 5
+// introduced its own (non-legacy) src/app/middleware/ directory.
 const LEGACY_PATH_MARKERS: Array<string | RegExp> = [
-  "/routes/",
-  "/middleware/",
-  "/jobs/",
+  /['"]\.\.(?:\/\.\.)*\/routes\//,
+  /['"]\.\.(?:\/\.\.)*\/middleware\//,
+  /['"]\.\.(?:\/\.\.)*\/jobs\//,
   /['"]\.\.(?:\/\.\.)*\/app(\.js)?['"]/,
   /['"]\.\.(?:\/\.\.)*\/index(\.js)?['"]/,
 ];
@@ -95,6 +98,21 @@ describe("legacy compatibility boundary (architecture)", () => {
       found,
       DOCUMENTED_REQUIRE_EXCEPTIONS,
       `Undocumented require()/createRequire() usage in compat/: ${found.join(", ")}`
+    );
+  });
+
+  it("legacy-middleware.ts no longer references middleware/rateLimit.js (rate limiting is now native TypeScript)", () => {
+    const legacyMiddlewarePath = path.join(COMPAT_DIR, "legacy-middleware.ts");
+    const content = stripComments(fs.readFileSync(legacyMiddlewarePath, "utf8"));
+    assert.doesNotMatch(
+      content,
+      /middleware\/rateLimit/,
+      "legacy-middleware.ts should no longer import middleware/rateLimit.js after the Stage 5 rate-limit migration"
+    );
+    assert.match(
+      content,
+      /middleware\/auth/,
+      "middleware/auth.js should remain the one documented legacy middleware reference (auth migration is a later stage)"
     );
   });
 });

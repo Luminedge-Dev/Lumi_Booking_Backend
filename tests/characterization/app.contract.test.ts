@@ -37,6 +37,11 @@ describe("app external contract (characterization)", () => {
     assert.deepEqual(res.body, { message: "Origin not allowed" });
   });
 
+  it("allows a request with no Origin header (non-browser/server-to-server clients)", async () => {
+    const res = await request(createTestApp()).get("/");
+    assert.equal(res.status, 200);
+  });
+
   it("sends baseline security headers and hides powered-by", async () => {
     const res = await request(createTestApp()).get("/");
     assert.equal(res.headers["x-content-type-options"], "nosniff");

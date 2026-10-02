@@ -1,8 +1,8 @@
 import { StatusCodes } from "http-status-codes";
 
-// Small, framework-agnostic domain error. Not wired into any existing route
-// or error-handling middleware yet (app.js's error handler is untouched) —
-// this is a primitive for migrated modules to adopt one module at a time.
+// Small, framework-agnostic application error used by the TypeScript
+// error-handling foundation. Migrated modules may adopt it incrementally;
+// legacy app.js and legacy routes remain unchanged.
 export class AppError extends Error {
   readonly statusCode: number;
   readonly errorCode?: string;

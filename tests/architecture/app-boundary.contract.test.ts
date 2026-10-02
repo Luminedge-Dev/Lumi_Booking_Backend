@@ -10,7 +10,7 @@ import type { Collection, Document, MongoClient } from "mongodb";
 import { createApp } from "../../src/app";
 import type { AppDependencies } from "../../src/app/database/database.types";
 import { throwingCollection } from "../helpers/create-test-app";
-import { legacyAuthLimiter, legacyGlobalLimiter } from "../../src/app/compat/legacy-middleware";
+import { authRateLimiter, globalRateLimiter, AUTH_RATE_LIMIT_PATHS } from "../../src/app/middleware/rate-limit";
 
 type TestApp = (req: IncomingMessage, res: ServerResponse) => unknown;
 
@@ -27,10 +27,10 @@ function fakeDependencies(): AppDependencies {
   };
 }
 
-function createTsTestApp(): TestApp {
+function createTsTestApp(corsOrigins?: string): TestApp {
   // No corsOrigins override -> exercises the same DEFAULT_ORIGINS fallback the
   // legacy contract test relies on.
-  return createApp(fakeDependencies()) as unknown as TestApp;
+  return createApp(fakeDependencies(), { corsOrigins }) as unknown as TestApp;
 }
 
 describe("src/app.ts boundary (architecture parity)", () => {
@@ -65,6 +65,26 @@ describe("src/app.ts boundary (architecture parity)", () => {
     assert.deepEqual(res.body, { message: "Origin not allowed" });
   });
 
+  it("allows a request with no Origin header (non-browser/server-to-server clients)", async () => {
+    const res = await request(createTsTestApp()).get("/");
+    assert.equal(res.status, 200);
+  });
+
+  it("a custom corsOrigins override is genuinely used, replacing the defaults", async () => {
+    const customOrigin = "https://custom.example";
+    const appWithOverride = createTsTestApp(customOrigin);
+
+    const allowed = await request(appWithOverride).get("/").set("Origin", customOrigin);
+    assert.equal(allowed.status, 200);
+    assert.equal(allowed.headers["access-control-allow-origin"], customOrigin);
+
+    // A default origin, once displaced by an explicit override, must get the
+    // full existing rejected-origin contract -- not just "not allowed".
+    const displaced = await request(appWithOverride).get("/").set("Origin", "http://localhost:3000");
+    assert.equal(displaced.status, 403);
+    assert.deepEqual(displaced.body, { message: "Origin not allowed" });
+  });
+
   it("sends baseline security headers and hides powered-by", async () => {
     const res = await request(createTsTestApp()).get("/");
     assert.equal(res.headers["x-content-type-options"], "nosniff");
@@ -76,20 +96,32 @@ describe("src/app.ts boundary (architecture parity)", () => {
     assert.equal(app.get("trust proxy"), 1);
   });
 
+  it("AUTH_RATE_LIMIT_PATHS still matches the legacy 4-path contract exactly", () => {
+    // Independent of the wiring test below: this catches an accidental drift
+    // in the constant itself (e.g. someone removing a path), which a test
+    // that only compares production code against itself would miss.
+    assert.deepEqual(AUTH_RATE_LIMIT_PATHS, [
+      "/api/v1/login",
+      "/api/v1/register",
+      "/api/v1/auth/forget-password",
+      "/api/v1/auth/reset-password",
+    ]);
+  });
+
   it("global limiter is wired before routes and auth limiter targets the auth-only paths", () => {
     const app = createApp(fakeDependencies());
     const stack = (app as unknown as { _router: { stack: Array<{ handle: unknown; route?: unknown; regexp: RegExp }> } })
       ._router.stack;
 
-    const globalIdx = stack.findIndex((layer) => layer.handle === legacyGlobalLimiter);
+    const globalIdx = stack.findIndex((layer) => layer.handle === globalRateLimiter);
     const firstRouteIdx = stack.findIndex((layer) => layer.route !== undefined);
     assert.ok(globalIdx !== -1, "global limiter layer should be present");
     assert.ok(firstRouteIdx !== -1, "at least one route layer should be present");
     assert.ok(globalIdx < firstRouteIdx, "global limiter should be mounted before any route");
 
-    const authLimiterLayer = stack.find((layer) => layer.handle === legacyAuthLimiter);
+    const authLimiterLayer = stack.find((layer) => layer.handle === authRateLimiter);
     assert.ok(authLimiterLayer, "auth limiter layer should be present");
-    for (const p of ["/api/v1/login", "/api/v1/register", "/api/v1/auth/forget-password", "/api/v1/auth/reset-password"]) {
+    for (const p of AUTH_RATE_LIMIT_PATHS) {
       assert.ok(authLimiterLayer!.regexp.test(p), `auth limiter should match ${p}`);
     }
   });
