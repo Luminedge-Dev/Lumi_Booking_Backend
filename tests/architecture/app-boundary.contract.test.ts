@@ -41,12 +41,14 @@ describe("src/app.ts boundary (architecture parity)", () => {
     assert.equal(res.body.message, "Server is running smoothly");
     assert.ok(res.body.timestamp, "timestamp exists");
     assert.ok(!Number.isNaN(Date.parse(res.body.timestamp)), "timestamp is parseable");
+    assert.ok(res.headers["x-request-id"], "x-request-id header present");
   });
 
   it("unknown route returns the JSON 404 contract", async () => {
     const res = await request(createTsTestApp()).get("/definitely-not-a-real-route");
     assert.equal(res.status, 404);
     assert.deepEqual(res.body, { message: "Not found" });
+    assert.ok(res.headers["x-request-id"], "x-request-id header present even on a 404");
   });
 
   it("allows a known browser origin", async () => {
@@ -63,6 +65,7 @@ describe("src/app.ts boundary (architecture parity)", () => {
       .set("Origin", "https://evil.example");
     assert.equal(res.status, 403);
     assert.deepEqual(res.body, { message: "Origin not allowed" });
+    assert.ok(res.headers["x-request-id"], "x-request-id header present even on a CORS rejection");
   });
 
   it("allows a request with no Origin header (non-browser/server-to-server clients)", async () => {

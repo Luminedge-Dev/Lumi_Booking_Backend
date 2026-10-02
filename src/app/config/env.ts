@@ -13,9 +13,19 @@ export interface AppConfig {
   isServerless: boolean;
   corsOrigins: string | undefined;
   skipIndexEnsureOnBoot: boolean;
+  slowRequestThresholdMs: number;
+  slowDbOperationThresholdMs: number;
 }
 
 let cached: AppConfig | undefined;
+
+// Number(x) || default would silently accept a negative value (e.g. -500)
+// since a negative number is truthy -- fine for nothing else in this file,
+// but not acceptable for a millisecond threshold.
+function parsePositiveNumber(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
 
 export function getConfig(): AppConfig {
   if (cached) return cached;
@@ -34,6 +44,8 @@ export function getConfig(): AppConfig {
     isServerless: !!process.env.VERCEL,
     corsOrigins: process.env.CORS_ORIGINS,
     skipIndexEnsureOnBoot: process.env.SKIP_INDEX_ENSURE_ON_BOOT === "true",
+    slowRequestThresholdMs: parsePositiveNumber(process.env.SLOW_REQUEST_THRESHOLD_MS, 1000),
+    slowDbOperationThresholdMs: parsePositiveNumber(process.env.SLOW_DB_OPERATION_THRESHOLD_MS, 250),
   };
   return cached;
 }

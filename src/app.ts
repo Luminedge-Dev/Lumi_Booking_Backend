@@ -15,6 +15,8 @@ import { createCorsMiddleware } from "./app/middleware/cors";
 import { authRateLimiter, globalRateLimiter, AUTH_RATE_LIMIT_PATHS } from "./app/middleware/rate-limit";
 import { notFoundHandler } from "./app/middleware/not-found";
 import { errorHandler } from "./app/middleware/error-handler";
+import { requestIdMiddleware } from "./app/middleware/request-id";
+import { requestObservability } from "./app/middleware/request-observability";
 
 export interface AppOptions {
   /** Raw CORS_ORIGINS value, already resolved by the caller from getConfig() —
@@ -34,6 +36,12 @@ export function createApp(dependencies: AppDependencies, options: AppOptions = {
   // Behind Vercel's proxy: makes req.ip / secure-cookie detection correct, which
   // the rate limiter and login cookie rely on.
   app.set("trust proxy", 1);
+
+  // Must run before everything else so x-request-id is on every response
+  // (including CORS rejections and rate-limit 429s), and so the timing
+  // middleware's duration covers the full pipeline.
+  app.use(requestIdMiddleware);
+  app.use(requestObservability);
 
   app.use(helmet());
   app.use(cookieParser());

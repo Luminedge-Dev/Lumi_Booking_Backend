@@ -2,6 +2,7 @@ import type { ErrorRequestHandler } from "express";
 import { StatusCodes } from "http-status-codes";
 import { AppError } from "../shared/errors/app-error";
 import { CORS_REJECTION_MESSAGE } from "./cors";
+import { logger } from "../shared/logger/logger";
 
 // Must keep exactly 4 declared parameters (even though req/next are unused)
 // so Express's arity-based error-middleware detection (fn.length === 4)
@@ -16,6 +17,10 @@ export const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
     res.status(StatusCodes.FORBIDDEN).json({ message: "Origin not allowed" });
     return;
   }
-  console.error(err.stack);
+  logger.error("http_request_error", {
+    errorName: err?.name,
+    message: err?.message,
+    stack: err?.stack,
+  });
   res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ message: "An unexpected error occurred. Please try again later." });
 };
