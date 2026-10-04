@@ -10,7 +10,10 @@ import cookieParser from "cookie-parser";
 import mongoSanitize from "express-mongo-sanitize";
 import type { AppDependencies } from "./app/database/database.types";
 import { initLegacyAuth } from "./app/compat/legacy-middleware";
-import { mountLegacyRoutes } from "./app/compat/legacy-routes";
+import { mountLegacyRoutesBeforeAuth, mountLegacyRoutesAfterAuth } from "./app/compat/legacy-routes";
+import { legacyEmailSender } from "./app/compat/legacy-email";
+import { createAuthModule } from "./app/modules/auth/auth.module";
+import type { AuthConfig } from "./app/modules/auth/auth.types";
 import { createCorsMiddleware } from "./app/middleware/cors";
 import { authRateLimiter, globalRateLimiter, AUTH_RATE_LIMIT_PATHS } from "./app/middleware/rate-limit";
 import { notFoundHandler } from "./app/middleware/not-found";
@@ -23,12 +26,22 @@ export interface AppOptions {
    *  this module never reads process.env itself (single configuration owner:
    *  env.ts -> server.ts -> app.ts). */
   corsOrigins?: string;
+  /** Stage 7: Auth-specific config (JWT secrets/expiries/reset link/
+   *  production-cookie flag), threaded the same way corsOrigins already is —
+   *  this module never reads process.env itself. Required (unlike
+   *  corsOrigins, which has a legitimate production default): there is no
+   *  safe default JWT secret, so every caller -- src/server.ts in production,
+   *  every test that exercises the native Auth routes -- must supply its own
+   *  explicit (real or fake) config. */
+  authConfig: AuthConfig;
 }
 
-export function createApp(dependencies: AppDependencies, options: AppOptions = {}): Application {
+export function createApp(dependencies: AppDependencies, options: AppOptions): Application {
   const { usersCollection, coursesCollection, schedulesCollection, bookingMockCollection, client } = dependencies;
 
-  // Let verifyToken check live account state (blocked/deleted, password change).
+  // Let the remaining legacy routes' verifyToken check live account state
+  // (blocked/deleted, password change) -- native Auth routes use their own
+  // middleware (auth.module.ts), independent of this legacy singleton.
   initLegacyAuth(usersCollection);
 
   const app = express();
@@ -62,7 +75,21 @@ export function createApp(dependencies: AppDependencies, options: AppOptions = {
   // Stricter limits on the abuse-prone auth surface (brute-force, spam resets).
   app.use([...AUTH_RATE_LIMIT_PATHS], authRateLimiter);
 
-  mountLegacyRoutes(app, { usersCollection, coursesCollection, schedulesCollection, bookingMockCollection, client });
+  const legacyDeps = { usersCollection, coursesCollection, schedulesCollection, bookingMockCollection, client };
+
+  // Mount order preserved exactly from the legacy mountLegacyRoutes():
+  // booking -> auth -> user -> feedback -> stats -> schedule. Auth is now
+  // native TypeScript (src/app/modules/auth) instead of
+  // routes/auth.routes.js inside this TS candidate only -- production
+  // (index.js -> app.js) is unaffected and keeps using the legacy file.
+  mountLegacyRoutesBeforeAuth(app, legacyDeps);
+  const authModule = createAuthModule({
+    usersCollection,
+    config: options.authConfig,
+    emailSender: legacyEmailSender,
+  });
+  app.use("/api/v1", authModule.router);
+  mountLegacyRoutesAfterAuth(app, legacyDeps);
 
   app.use(notFoundHandler);
   app.use(errorHandler);

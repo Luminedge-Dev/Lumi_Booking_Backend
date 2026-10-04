@@ -115,4 +115,67 @@ describe("legacy compatibility boundary (architecture)", () => {
       "middleware/auth.js should remain the one documented legacy middleware reference (auth migration is a later stage)"
     );
   });
+
+  it("legacy-routes.ts no longer mounts routes/auth.routes.js (Stage 7: native Auth replaces it in the TS candidate)", () => {
+    const legacyRoutesPath = path.join(COMPAT_DIR, "legacy-routes.ts");
+    const content = stripComments(fs.readFileSync(legacyRoutesPath, "utf8"));
+    assert.doesNotMatch(
+      content,
+      /routes\/auth\.routes/,
+      "legacy-routes.ts should no longer import/mount routes/auth.routes.js after the Stage 7 Auth migration"
+    );
+  });
+});
+
+describe("Stage 7 Auth module boundary (architecture)", () => {
+  const AUTH_MODULE_DIR = path.join(SRC_DIR, "app", "modules", "auth");
+  const authModuleFiles = listTsFiles(AUTH_MODULE_DIR);
+  const REPOSITORY_FILE = path.join(AUTH_MODULE_DIR, "auth.repository.ts");
+
+  // Matches the collection verbs auth.repository.ts itself legitimately uses
+  // (findOne/insertOne/updateOne) plus a couple of other common driver verbs,
+  // called on any receiver -- a generic shape check, not tied to a specific
+  // variable name, so it still catches a hypothetical future violation.
+  const MONGO_VERB_CALL = /\.(findOne|insertOne|updateOne|updateMany|deleteOne|deleteMany|find)\s*\(/;
+
+  it("no file in the Auth module performs direct MongoDB collection access outside auth.repository.ts", () => {
+    const violations: string[] = [];
+    for (const file of authModuleFiles) {
+      if (file === REPOSITORY_FILE) continue;
+      const content = stripComments(fs.readFileSync(file, "utf8"));
+      for (const line of content.split("\n")) {
+        if (MONGO_VERB_CALL.test(line)) {
+          violations.push(`${path.relative(SRC_DIR, file)}: ${line.trim()}`);
+        }
+      }
+    }
+    assert.deepEqual(violations, [], `Direct Mongo access found outside auth.repository.ts:\n${violations.join("\n")}`);
+  });
+
+  it("no file in the Auth module reads process.env directly (config flows through env.ts -> server.ts -> app.ts -> auth.module.ts)", () => {
+    const violations: string[] = [];
+    for (const file of authModuleFiles) {
+      const content = stripComments(fs.readFileSync(file, "utf8"));
+      if (/process\.env/.test(content)) {
+        violations.push(path.relative(SRC_DIR, file));
+      }
+    }
+    assert.deepEqual(violations, [], `process.env read directly inside the Auth module: ${violations.join(", ")}`);
+  });
+
+  it("the Auth module exists with the required module-first files", () => {
+    const required = [
+      "auth.module.ts",
+      "auth.route.ts",
+      "auth.controller.ts",
+      "auth.service.ts",
+      "auth.repository.ts",
+      "auth.middleware.ts",
+      "auth.validation.ts",
+      "auth.types.ts",
+    ];
+    for (const name of required) {
+      assert.ok(fs.existsSync(path.join(AUTH_MODULE_DIR, name)), `missing required Auth module file: ${name}`);
+    }
+  });
 });

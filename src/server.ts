@@ -84,7 +84,19 @@ export async function startServer(): Promise<ServerHandle> {
       startLegacyReminderCron(collections.usersCollection);
     }
 
-    const app = createApp(dependencies, { corsOrigins: config.corsOrigins });
+    const app = createApp(dependencies, {
+      corsOrigins: config.corsOrigins,
+      // Stage 7: threaded the same way corsOrigins already is -- src/app.ts
+      // never reads process.env itself (single configuration owner, env.ts).
+      authConfig: {
+        jwtSecret: config.jwtSecret,
+        jwtResetPasswordSecret: config.jwtResetPasswordSecret,
+        jwtExpiresIn: config.jwtExpiresIn,
+        jwtResetPasswordTokenExpiresIn: config.jwtResetPasswordTokenExpiresIn,
+        resetPasswordLink: config.resetPasswordLink,
+        isProduction: config.isProduction,
+      },
+    });
     httpServer = await listenAsync(http.createServer(app), config.port);
     console.log(`[src/server.ts] listening on http://localhost:${config.port}`);
 

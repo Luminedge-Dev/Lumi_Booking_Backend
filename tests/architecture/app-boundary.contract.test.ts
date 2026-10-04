@@ -7,12 +7,24 @@ import assert from "node:assert/strict";
 import request from "supertest";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Collection, Document, MongoClient } from "mongodb";
-import { createApp } from "../../src/app";
+import { createApp, type AppOptions } from "../../src/app";
 import type { AppDependencies } from "../../src/app/database/database.types";
+import type { AuthConfig } from "../../src/app/modules/auth/auth.types";
 import { throwingCollection } from "../helpers/create-test-app";
 import { authRateLimiter, globalRateLimiter, AUTH_RATE_LIMIT_PATHS } from "../../src/app/middleware/rate-limit";
 
 type TestApp = (req: IncomingMessage, res: ServerResponse) => unknown;
+
+function fakeAuthConfig(): AuthConfig {
+  return {
+    jwtSecret: "test-only-secret",
+    jwtResetPasswordSecret: "test-only-reset-secret",
+    jwtExpiresIn: "7d",
+    jwtResetPasswordTokenExpiresIn: "15m",
+    resetPasswordLink: "https://example.test/reset-password",
+    isProduction: false,
+  };
+}
 
 function fakeDependencies(): AppDependencies {
   // throwingCollection returns a Proxy standing in for a Collection, not a real
@@ -27,10 +39,14 @@ function fakeDependencies(): AppDependencies {
   };
 }
 
-function createTsTestApp(corsOrigins?: string): TestApp {
+function createTsTestApp(corsOrigins?: string, optionsOverride: Partial<AppOptions> = {}): TestApp {
   // No corsOrigins override -> exercises the same DEFAULT_ORIGINS fallback the
   // legacy contract test relies on.
-  return createApp(fakeDependencies(), { corsOrigins }) as unknown as TestApp;
+  return createApp(fakeDependencies(), {
+    corsOrigins,
+    authConfig: fakeAuthConfig(),
+    ...optionsOverride,
+  }) as unknown as TestApp;
 }
 
 describe("src/app.ts boundary (architecture parity)", () => {
@@ -95,7 +111,7 @@ describe("src/app.ts boundary (architecture parity)", () => {
   });
 
   it("trust proxy is enabled for correct req.ip / secure-cookie detection behind Vercel", () => {
-    const app = createApp(fakeDependencies());
+    const app = createApp(fakeDependencies(), { authConfig: fakeAuthConfig() });
     assert.equal(app.get("trust proxy"), 1);
   });
 
@@ -112,7 +128,7 @@ describe("src/app.ts boundary (architecture parity)", () => {
   });
 
   it("global limiter is wired before routes and auth limiter targets the auth-only paths", () => {
-    const app = createApp(fakeDependencies());
+    const app = createApp(fakeDependencies(), { authConfig: fakeAuthConfig() });
     const stack = (app as unknown as { _router: { stack: Array<{ handle: unknown; route?: unknown; regexp: RegExp }> } })
       ._router.stack;
 

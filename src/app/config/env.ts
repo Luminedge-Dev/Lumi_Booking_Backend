@@ -15,6 +15,17 @@ export interface AppConfig {
   skipIndexEnsureOnBoot: boolean;
   slowRequestThresholdMs: number;
   slowDbOperationThresholdMs: number;
+  // Stage 7 (Auth migration): these mirror exactly what routes/auth.routes.js
+  // and middleware/auth.js already read from process.env directly — adding
+  // them here does not change any default or requirement, it only gives the
+  // native Auth module a single configuration owner to receive them from
+  // (AGENTS.md ss4a rule 5) instead of reading process.env itself.
+  jwtSecret: string;
+  jwtResetPasswordSecret: string;
+  jwtExpiresIn: string;
+  jwtResetPasswordTokenExpiresIn: string;
+  resetPasswordLink: string | undefined;
+  isProduction: boolean;
 }
 
 let cached: AppConfig | undefined;
@@ -46,6 +57,17 @@ export function getConfig(): AppConfig {
     skipIndexEnsureOnBoot: process.env.SKIP_INDEX_ENSURE_ON_BOOT === "true",
     slowRequestThresholdMs: parsePositiveNumber(process.env.SLOW_REQUEST_THRESHOLD_MS, 1000),
     slowDbOperationThresholdMs: parsePositiveNumber(process.env.SLOW_DB_OPERATION_THRESHOLD_MS, 250),
+    jwtSecret: process.env.JWT_SECRET as string,
+    jwtResetPasswordSecret: process.env.JWT_RESET_PASS_SECRET as string,
+    // Matches routes/auth.routes.js's `process.env.EXPIRES_IN || "7d"` exactly.
+    jwtExpiresIn: process.env.EXPIRES_IN || "7d",
+    // Matches routes/auth.routes.js's
+    // `process.env.JWT_RESET_PASS_TOKEN_EXPIRES_IN || "15m"` exactly.
+    jwtResetPasswordTokenExpiresIn: process.env.JWT_RESET_PASS_TOKEN_EXPIRES_IN || "15m",
+    // Legacy never validates this (used unguarded in a template string) --
+    // kept optional here for the same reason, not newly required.
+    resetPasswordLink: process.env.RESET_PASS_LINK,
+    isProduction: process.env.NODE_ENV === "production",
   };
   return cached;
 }
