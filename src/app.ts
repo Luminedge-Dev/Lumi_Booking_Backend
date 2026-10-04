@@ -10,10 +10,16 @@ import cookieParser from "cookie-parser";
 import mongoSanitize from "express-mongo-sanitize";
 import type { AppDependencies } from "./app/database/database.types";
 import { initLegacyAuth } from "./app/compat/legacy-middleware";
-import { mountLegacyRoutesBeforeAuth, mountLegacyRoutesAfterAuth } from "./app/compat/legacy-routes";
+import {
+  mountLegacyRoutesBeforeAuth,
+  mountLegacyUserAndMidRoutes,
+  mountLegacyScheduleRoutes,
+} from "./app/compat/legacy-routes";
 import { legacyEmailSender } from "./app/compat/legacy-email";
 import { createAuthModule } from "./app/modules/auth/auth.module";
 import type { AuthConfig } from "./app/modules/auth/auth.types";
+import { createUserModule } from "./app/modules/user/user.module";
+import { createCourseModule } from "./app/modules/course/course.module";
 import { createCorsMiddleware } from "./app/middleware/cors";
 import { authRateLimiter, globalRateLimiter, AUTH_RATE_LIMIT_PATHS } from "./app/middleware/rate-limit";
 import { notFoundHandler } from "./app/middleware/not-found";
@@ -78,10 +84,14 @@ export function createApp(dependencies: AppDependencies, options: AppOptions): A
   const legacyDeps = { usersCollection, coursesCollection, schedulesCollection, bookingMockCollection, client };
 
   // Mount order preserved exactly from the legacy mountLegacyRoutes():
-  // booking -> auth -> user -> feedback -> stats -> schedule. Auth is now
-  // native TypeScript (src/app/modules/auth) instead of
-  // routes/auth.routes.js inside this TS candidate only -- production
-  // (index.js -> app.js) is unaffected and keeps using the legacy file.
+  // booking -> auth -> user -> feedback -> stats -> schedule, with native
+  // User and native Course each inserted immediately before the remaining
+  // legacy routes they shadow (Stage 8, same shadowing-by-mount-order
+  // pattern Stage 7 established for Auth):
+  // booking -> auth -> USER -> (user/feedback/stats) -> COURSE -> schedule.
+  // Auth/User/Course are native TypeScript inside this TS candidate only --
+  // production (index.js -> app.js) is unaffected and keeps using the
+  // legacy files directly.
   mountLegacyRoutesBeforeAuth(app, legacyDeps);
   const authModule = createAuthModule({
     usersCollection,
@@ -89,7 +99,14 @@ export function createApp(dependencies: AppDependencies, options: AppOptions): A
     emailSender: legacyEmailSender,
   });
   app.use("/api/v1", authModule.router);
-  mountLegacyRoutesAfterAuth(app, legacyDeps);
+
+  const userModule = createUserModule({ usersCollection, authMiddleware: authModule.middleware });
+  app.use("/api/v1", userModule.router);
+  mountLegacyUserAndMidRoutes(app, legacyDeps);
+
+  const courseModule = createCourseModule({ coursesCollection });
+  app.use("/api/v1", courseModule.router);
+  mountLegacyScheduleRoutes(app, legacyDeps);
 
   app.use(notFoundHandler);
   app.use(errorHandler);

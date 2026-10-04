@@ -7,12 +7,21 @@
 //
 // Stage 7 (Auth migration): routes/auth.routes.js is no longer mounted here.
 // Native Auth (src/app/modules/auth) now serves those five endpoints inside
-// the TS candidate. This file is split into two mount functions so src/app.ts
-// can insert native Auth between them, preserving the exact legacy mount
-// order (booking -> auth -> user -> feedback -> stats -> schedule).
-// routes/auth.routes.js itself is untouched and remains the active
-// production implementation via index.js -> app.js, which never imports
-// anything from src/.
+// the TS candidate. routes/auth.routes.js itself is untouched and remains
+// the active production implementation via index.js -> app.js, which never
+// imports anything from src/.
+//
+// Stage 8 (User + Course migration): native User (src/app/modules/user) is
+// mounted between mountLegacyUserAndMidRoutes's predecessor call and this
+// function, and native Course (src/app/modules/course) between this
+// function and mountLegacyScheduleRoutes -- both via src/app.ts, not here.
+// routes/user.routes.js and routes/schedule.routes.js are NEVER edited;
+// native User/Course shadow 6 specific paths by mount order alone (same
+// pattern Stage 7 established for Auth). The old mountLegacyRoutesAfterAuth
+// is split in two so src/app.ts can insert native Course right before
+// scheduleRoutes() (GET /courses lives inside schedule.routes.js), while
+// userRoutes()/feedbackRoutes()/statsRoutes() stay mounted together exactly
+// as before (none of those three needed a split point).
 import type { Application } from "express";
 import userRoutes from "../../../routes/user.routes";
 import bookingRoutes from "../../../routes/booking.routes";
@@ -29,11 +38,24 @@ export function mountLegacyRoutesBeforeAuth(app: Application, dependencies: AppD
   app.use("/api/v1", bookingRoutes({ usersCollection, schedulesCollection, bookingMockCollection, coursesCollection, client }));
 }
 
-export function mountLegacyRoutesAfterAuth(app: Application, dependencies: AppDependencies): void {
-  const { usersCollection, coursesCollection, schedulesCollection, bookingMockCollection, client } = dependencies;
+// Mounted after native User in src/app.ts. Still mounts the FULL, unedited
+// userRoutes() -- native User's 5 migrated paths shadow the corresponding
+// legacy handlers (dead code, same harmless pattern as Stage 7's
+// auth.routes.js); everything else in user.routes.js (/admin/users,
+// /user/all, the PUT mutation routes) still reaches this router unmodified.
+export function mountLegacyUserAndMidRoutes(app: Application, dependencies: AppDependencies): void {
+  const { usersCollection, bookingMockCollection, client } = dependencies;
 
   app.use("/api/v1", userRoutes({ usersCollection }));
   app.use("/api/v1", feedbackRoutes({ usersCollection, bookingMockCollection, client }));
   app.use("/api/v1", statsRoutes({ usersCollection, bookingMockCollection }));
+}
+
+// Mounted after native Course in src/app.ts. GET /courses inside
+// scheduleRoutes() becomes shadowed/dead code; every other schedule route is
+// untouched and fully reachable.
+export function mountLegacyScheduleRoutes(app: Application, dependencies: AppDependencies): void {
+  const { coursesCollection, schedulesCollection } = dependencies;
+
   app.use("/api/v1", scheduleRoutes({ schedulesCollection, coursesCollection }));
 }

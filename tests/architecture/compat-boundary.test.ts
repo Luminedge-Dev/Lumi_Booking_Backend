@@ -125,6 +125,23 @@ describe("legacy compatibility boundary (architecture)", () => {
       "legacy-routes.ts should no longer import/mount routes/auth.routes.js after the Stage 7 Auth migration"
     );
   });
+
+  it("legacy-routes.ts still mounts the FULL, unedited routes/user.routes.js and routes/schedule.routes.js (Stage 8 shadows by mount order, not by editing these files)", () => {
+    const legacyRoutesPath = path.join(COMPAT_DIR, "legacy-routes.ts");
+    const content = stripComments(fs.readFileSync(legacyRoutesPath, "utf8"));
+    assert.match(content, /routes\/user\.routes/, "legacy-routes.ts must still import the full routes/user.routes.js");
+    assert.match(content, /routes\/schedule\.routes/, "legacy-routes.ts must still import the full routes/schedule.routes.js");
+    assert.match(
+      content,
+      /mountLegacyUserAndMidRoutes/,
+      "legacy-routes.ts must export the Stage 8 split mount function for user/feedback/stats"
+    );
+    assert.match(
+      content,
+      /mountLegacyScheduleRoutes/,
+      "legacy-routes.ts must export the Stage 8 split mount function for schedule"
+    );
+  });
 });
 
 describe("Stage 7 Auth module boundary (architecture)", () => {
@@ -177,5 +194,110 @@ describe("Stage 7 Auth module boundary (architecture)", () => {
     for (const name of required) {
       assert.ok(fs.existsSync(path.join(AUTH_MODULE_DIR, name)), `missing required Auth module file: ${name}`);
     }
+  });
+});
+
+describe("Stage 8 User/Course module boundary (architecture)", () => {
+  const USER_MODULE_DIR = path.join(SRC_DIR, "app", "modules", "user");
+  const COURSE_MODULE_DIR = path.join(SRC_DIR, "app", "modules", "course");
+  const userModuleFiles = listTsFiles(USER_MODULE_DIR);
+  const courseModuleFiles = listTsFiles(COURSE_MODULE_DIR);
+  const USER_REPOSITORY_FILE = path.join(USER_MODULE_DIR, "user.repository.ts");
+  const COURSE_REPOSITORY_FILE = path.join(COURSE_MODULE_DIR, "course.repository.ts");
+
+  const MONGO_VERB_CALL = /\.(findOne|insertOne|updateOne|updateMany|deleteOne|deleteMany|find|countDocuments)\s*\(/;
+
+  function assertNoDirectMongoOutsideRepository(files: string[], repositoryFile: string, moduleName: string) {
+    const violations: string[] = [];
+    for (const file of files) {
+      if (file === repositoryFile) continue;
+      const content = stripComments(fs.readFileSync(file, "utf8"));
+      for (const line of content.split("\n")) {
+        if (MONGO_VERB_CALL.test(line)) {
+          violations.push(`${path.relative(SRC_DIR, file)}: ${line.trim()}`);
+        }
+      }
+    }
+    assert.deepEqual(violations, [], `Direct Mongo access found outside ${moduleName}'s repository:\n${violations.join("\n")}`);
+  }
+
+  function assertNoProcessEnv(files: string[], moduleName: string) {
+    const violations: string[] = [];
+    for (const file of files) {
+      const content = stripComments(fs.readFileSync(file, "utf8"));
+      if (/process\.env/.test(content)) {
+        violations.push(path.relative(SRC_DIR, file));
+      }
+    }
+    assert.deepEqual(violations, [], `process.env read directly inside the ${moduleName} module: ${violations.join(", ")}`);
+  }
+
+  it("no file in the User module performs direct MongoDB collection access outside user.repository.ts", () => {
+    assertNoDirectMongoOutsideRepository(userModuleFiles, USER_REPOSITORY_FILE, "User");
+  });
+
+  it("no file in the Course module performs direct MongoDB collection access outside course.repository.ts", () => {
+    assertNoDirectMongoOutsideRepository(courseModuleFiles, COURSE_REPOSITORY_FILE, "Course");
+  });
+
+  it("no file in the User module reads process.env directly", () => {
+    assertNoProcessEnv(userModuleFiles, "User");
+  });
+
+  it("no file in the Course module reads process.env directly", () => {
+    assertNoProcessEnv(courseModuleFiles, "Course");
+  });
+
+  it("the User module exists with the required module-first files", () => {
+    const required = [
+      "user.module.ts",
+      "user.route.ts",
+      "user.controller.ts",
+      "user.service.ts",
+      "user.repository.ts",
+      "user.authorization.ts",
+      "user.mapper.ts",
+      "user.validation.ts",
+      "user.types.ts",
+    ];
+    for (const name of required) {
+      assert.ok(fs.existsSync(path.join(USER_MODULE_DIR, name)), `missing required User module file: ${name}`);
+    }
+  });
+
+  it("the Course module exists with the required module-first files", () => {
+    const required = [
+      "course.module.ts",
+      "course.route.ts",
+      "course.controller.ts",
+      "course.service.ts",
+      "course.repository.ts",
+      "course.mapper.ts",
+      "course.types.ts",
+    ];
+    for (const name of required) {
+      assert.ok(fs.existsSync(path.join(COURSE_MODULE_DIR, name)), `missing required Course module file: ${name}`);
+    }
+  });
+
+  it("user.authorization.ts has no Express/HTTP coupling (pure predicates only, per the Stage 8 plan's architecture correction)", () => {
+    const content = stripComments(fs.readFileSync(path.join(USER_MODULE_DIR, "user.authorization.ts"), "utf8"));
+    assert.doesNotMatch(content, /from ["']express["']/, "user.authorization.ts must not import express");
+    assert.doesNotMatch(content, /\bres\.status\s*\(/, "user.authorization.ts must not write HTTP responses itself");
+  });
+
+  it("the mandatory route-collision guard (passThroughNonObjectId) is registered before verifyToken on GET /user/:userId", () => {
+    const content = stripComments(fs.readFileSync(path.join(USER_MODULE_DIR, "user.route.ts"), "utf8"));
+    const match = content.match(/router\.get\(\s*"\/user\/:userId"[\s\S]*?\);/);
+    assert.ok(match, "expected to find the GET /user/:userId route registration");
+    const registration = match![0];
+    const guardIndex = registration.indexOf("passThroughNonObjectId");
+    const verifyTokenIndex = registration.indexOf("verifyToken");
+    assert.ok(guardIndex !== -1, "passThroughNonObjectId must be referenced in the /user/:userId route");
+    assert.ok(verifyTokenIndex !== -1, "verifyToken must be referenced in the /user/:userId route");
+    assert.ok(
+      guardIndex < verifyTokenIndex,
+      "passThroughNonObjectId must be registered BEFORE verifyToken on GET /user/:userId (route-collision guard ordering requirement)"
+    );
   });
 });
