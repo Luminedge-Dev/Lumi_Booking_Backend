@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "test": "node --import=tsx --test --test-concurrency=1",
     "test:characterization": "node --import=tsx --test --test-concurrency=1 \"tests/characterization/**/*.test.ts\"",
-    "test:architecture": "node --import=tsx --test --test-concurrency=1 \"tests/architecture/**/*.test.ts\""
+    "test:architecture": "node --import=tsx --test --test-concurrency=1 \"tests/architecture/**/*.test.ts\"",
+    "test:transaction": "node --import=tsx --test --test-concurrency=1 tests/transactions/transaction-foundation.transaction.ts"
   },
   "author": "Luminedge_Developers",
   "license": "ISC",
@@ -44,6 +45,7 @@
     "@types/node": "^26.6.3",
     "@types/sanitize-html": "^2.16.2",
     "@types/supertest": "7.2.1",
+    "mongodb-memory-server-core": "11.2.0",
     "supertest": "7.3.0",
     "tsx": "4.23.15",
     "typescript": "7.0.2"
