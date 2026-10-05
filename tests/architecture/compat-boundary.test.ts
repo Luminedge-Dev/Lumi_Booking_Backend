@@ -301,3 +301,86 @@ describe("Stage 8 User/Course module boundary (architecture)", () => {
     );
   });
 });
+
+describe("Stage 9 Schedule module boundary (architecture)", () => {
+  const SCHEDULE_MODULE_DIR = path.join(SRC_DIR, "app", "modules", "schedule");
+  const scheduleModuleFiles = listTsFiles(SCHEDULE_MODULE_DIR);
+  const SCHEDULE_REPOSITORY_FILE = path.join(SCHEDULE_MODULE_DIR, "schedule.repository.ts");
+
+  const MONGO_VERB_CALL = /\.(findOne|insertOne|updateOne|updateMany|deleteOne|deleteMany|find|countDocuments|aggregate)\s*\(/;
+
+  it("no file in the Schedule module performs direct MongoDB collection access outside schedule.repository.ts", () => {
+    const violations: string[] = [];
+    for (const file of scheduleModuleFiles) {
+      if (file === SCHEDULE_REPOSITORY_FILE) continue;
+      const content = stripComments(fs.readFileSync(file, "utf8"));
+      for (const line of content.split("\n")) {
+        if (MONGO_VERB_CALL.test(line)) {
+          violations.push(`${path.relative(SRC_DIR, file)}: ${line.trim()}`);
+        }
+      }
+    }
+    assert.deepEqual(violations, [], `Direct Mongo access found outside schedule.repository.ts:\n${violations.join("\n")}`);
+  });
+
+  it("no file in the Schedule module reads process.env directly", () => {
+    const violations: string[] = [];
+    for (const file of scheduleModuleFiles) {
+      const content = stripComments(fs.readFileSync(file, "utf8"));
+      if (/process\.env/.test(content)) {
+        violations.push(path.relative(SRC_DIR, file));
+      }
+    }
+    assert.deepEqual(violations, [], `process.env read directly inside the Schedule module: ${violations.join(", ")}`);
+  });
+
+  it("the Schedule module exists with the required module-first files", () => {
+    const required = [
+      "schedule.module.ts",
+      "schedule.route.ts",
+      "schedule.controller.ts",
+      "schedule.service.ts",
+      "schedule.repository.ts",
+      "schedule.mapper.ts",
+      "schedule.validation.ts",
+      "schedule.types.ts",
+    ];
+    for (const name of required) {
+      assert.ok(fs.existsSync(path.join(SCHEDULE_MODULE_DIR, name)), `missing required Schedule module file: ${name}`);
+    }
+  });
+
+  it("no file in the Schedule module depends on a booking collection (delete stays a Schedule-only hard delete this stage)", () => {
+    const violations: string[] = [];
+    for (const file of scheduleModuleFiles) {
+      const content = stripComments(fs.readFileSync(file, "utf8"));
+      if (/bookingMockCollection|bookingCollection/.test(content)) {
+        violations.push(path.relative(SRC_DIR, file));
+      }
+    }
+    assert.deepEqual(violations, [], `Unexpected booking-collection dependency inside the Schedule module: ${violations.join(", ")}`);
+  });
+
+  it("no file in the Schedule module imports routes/schedule.routes.js (coexists only via the compat mount-order boundary)", () => {
+    const violations: string[] = [];
+    for (const file of scheduleModuleFiles) {
+      const content = stripComments(fs.readFileSync(file, "utf8"));
+      if (/routes\/schedule\.routes/.test(content)) {
+        violations.push(path.relative(SRC_DIR, file));
+      }
+    }
+    assert.deepEqual(violations, [], `Unexpected routes/schedule.routes.js reference inside the Schedule module: ${violations.join(", ")}`);
+  });
+
+  it("the mandatory route-order guard: GET /schedule/course/:courseId is registered before GET /schedule/:date/:courseId", () => {
+    const content = stripComments(fs.readFileSync(path.join(SCHEDULE_MODULE_DIR, "schedule.route.ts"), "utf8"));
+    const monthlyIndex = content.indexOf('"/schedule/course/:courseId"');
+    const dailyIndex = content.indexOf('"/schedule/:date/:courseId"');
+    assert.ok(monthlyIndex !== -1, "expected to find the GET /schedule/course/:courseId route registration");
+    assert.ok(dailyIndex !== -1, "expected to find the GET /schedule/:date/:courseId route registration");
+    assert.ok(
+      monthlyIndex < dailyIndex,
+      "/schedule/course/:courseId must be registered BEFORE /schedule/:date/:courseId (route-order guard requirement)"
+    );
+  });
+});

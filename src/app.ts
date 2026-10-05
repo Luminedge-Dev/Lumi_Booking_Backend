@@ -20,6 +20,7 @@ import { createAuthModule } from "./app/modules/auth/auth.module";
 import type { AuthConfig } from "./app/modules/auth/auth.types";
 import { createUserModule } from "./app/modules/user/user.module";
 import { createCourseModule } from "./app/modules/course/course.module";
+import { createScheduleModule } from "./app/modules/schedule/schedule.module";
 import { createCorsMiddleware } from "./app/middleware/cors";
 import { authRateLimiter, globalRateLimiter, AUTH_RATE_LIMIT_PATHS } from "./app/middleware/rate-limit";
 import { notFoundHandler } from "./app/middleware/not-found";
@@ -85,13 +86,15 @@ export function createApp(dependencies: AppDependencies, options: AppOptions): A
 
   // Mount order preserved exactly from the legacy mountLegacyRoutes():
   // booking -> auth -> user -> feedback -> stats -> schedule, with native
-  // User and native Course each inserted immediately before the remaining
-  // legacy routes they shadow (Stage 8, same shadowing-by-mount-order
-  // pattern Stage 7 established for Auth):
-  // booking -> auth -> USER -> (user/feedback/stats) -> COURSE -> schedule.
-  // Auth/User/Course are native TypeScript inside this TS candidate only --
-  // production (index.js -> app.js) is unaffected and keeps using the
-  // legacy files directly.
+  // User, Course, and Schedule each inserted immediately before the
+  // remaining legacy routes they shadow (Stage 8 established this
+  // shadowing-by-mount-order pattern for User/Course; Stage 9 extends it to
+  // Schedule): booking -> auth -> USER -> (user/feedback/stats) -> COURSE
+  // -> SCHEDULE -> (remaining legacy schedule routes, primarily
+  // /schedule/:userId -- deliberately not migrated, see schedule.module.ts).
+  // Auth/User/Course/Schedule are native TypeScript inside this TS
+  // candidate only -- production (index.js -> app.js) is unaffected and
+  // keeps using the legacy files directly.
   mountLegacyRoutesBeforeAuth(app, legacyDeps);
   const authModule = createAuthModule({
     usersCollection,
@@ -106,6 +109,9 @@ export function createApp(dependencies: AppDependencies, options: AppOptions): A
 
   const courseModule = createCourseModule({ coursesCollection });
   app.use("/api/v1", courseModule.router);
+
+  const scheduleModule = createScheduleModule({ schedulesCollection, authMiddleware: authModule.middleware });
+  app.use("/api/v1", scheduleModule.router);
   mountLegacyScheduleRoutes(app, legacyDeps);
 
   app.use(notFoundHandler);

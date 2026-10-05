@@ -51,9 +51,15 @@ export function mountLegacyUserAndMidRoutes(app: Application, dependencies: AppD
   app.use("/api/v1", statsRoutes({ usersCollection, bookingMockCollection }));
 }
 
-// Mounted after native Course in src/app.ts. GET /courses inside
-// scheduleRoutes() becomes shadowed/dead code; every other schedule route is
-// untouched and fully reachable.
+// Mounted after native Course AND native Schedule in src/app.ts (Stage 9).
+// GET /courses, POST /admin/create-schedule, GET /schedule/:date/:courseId,
+// GET /admin/get-schedules, and DELETE /admin/delete-schedule/:id inside
+// scheduleRoutes() all become shadowed/dead code; GET /schedule/:userId
+// (deliberately NOT migrated -- no frontend caller, never populated by this
+// file's own writes) remains the one route this mount call still actually
+// serves. No further split needed: native Schedule shadows multiple paths
+// within this same already-isolated legacy file, so mounting it immediately
+// before this one call is sufficient.
 export function mountLegacyScheduleRoutes(app: Application, dependencies: AppDependencies): void {
   const { coursesCollection, schedulesCollection } = dependencies;
 
