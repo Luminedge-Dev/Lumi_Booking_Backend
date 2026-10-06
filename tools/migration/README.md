@@ -41,10 +41,10 @@ never silently dropped.
 
 ## What this is not
 
-- Not a Mongoose schema. Field types here describe the **persistence**
-  target; Stage 10.6 compiles these contracts into actual Mongoose schemas
-  that **validate** already-normalized data — they do not re-implement this
-  coercion logic via schema casts/transforms.
+- Not an ORM schema. Field types here describe the **canonical**
+  source-data shape; a future persistence stage compiles the approved
+  relational/Prisma mapping from these contracts — this tooling does not
+  re-implement validation logic via ORM casts/transforms.
 - Not a real migration. No document from any real database — source or
   destination — is read or written by this code. Running an actual
   migration (old cluster → normalize → validate → write → new cluster) is a
@@ -86,9 +86,10 @@ section of `context/canonical-data-contract.md` — validated by
 drift apart (a `NORMALIZE_ON_READ` field without a normalizer, or vice
 versa).
 
-## Consumed by
+## Consumed by (future)
 
-Stage 10.6 (Mongoose Persistence Convergence) compiles these contracts into
-actual Mongoose schema field declarations. See
-`C:\Users\PC\.claude\plans\first-read-my-prd-prancy-crab.md` for the full
-two-stage plan.
+Stage 10.5 is target-neutral canonicalization tooling. It may later feed a
+future Mongo → canonical normalize → relational transform → PostgreSQL
+migration pipeline. It does not imply Mongoose or Prisma itself.
+
+No production database is accessed.

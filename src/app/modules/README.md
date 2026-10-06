@@ -1,9 +1,8 @@
-# Module Convention (future vertical modules)
+# Module Convention (vertical modules)
 
-This folder is currently empty of real modules on purpose — Stage 4 establishes the
-convention only. No `auth/`, `user/`, `booking/`, etc. folders exist yet; they are
-created one at a time, starting with Auth, only once that module's migration stage
-begins.
+Implemented modules: `auth/`, `user/`, `course/`, `schedule/`.
+Planned modules: `booking/`, `entitlement/`, `feedback/`, `trf/`,
+`analytics/`, `notifications/`.
 
 ## Shape
 
@@ -36,8 +35,8 @@ No Mongo queries.
 **Service** — business rules, authorization policy, transaction orchestration,
 domain decisions. Framework-agnostic (no `req`/`res`).
 
-**Repository** — MongoDB persistence: filters, projections, updates, aggregations.
-No authorization/business decisions.
+**Repository** — persistence implementation behind the module boundary:
+filters, projections, updates, aggregations. No authorization/business decisions.
 
 **Validation** — module-owned request schemas (params/query/body).
 
