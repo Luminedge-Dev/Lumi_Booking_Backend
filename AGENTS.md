@@ -2,7 +2,7 @@
 
 **Status:** ACTIVE — 2026-10-06
 **Scope:** this repository only (`luminedge_booking_backend/`).
-**Stage:** Stage 11 — Production Workload & Resource Baseline — IN PROGRESS.
+**Stage:** Stage 11 — Production Workload & Resource Baseline — IN PROGRESS (TELEMETRY DEFERRED) + Stage 12 — DESIGN ONLY (parallel).
 **Target:** D-032 — PostgreSQL + Prisma ORM 7 + Neon preferred (NOT implemented).
 
 ## 1. Workspace context (not tracked by this repo's Git)
