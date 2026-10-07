@@ -143,15 +143,21 @@ describe("production entrypoint configuration (architecture)", () => {
     assert.match(pkg.scripts["start:legacy"] ?? "", /index\.js/);
   });
 
-  it("no Prisma/PostgreSQL/Better Auth/Mongoose dependency was introduced", () => {
+  it("Prisma 7.10.0 is pinned and Better Auth, Mongoose, and pg are absent", () => {
     const pkg = JSON.parse(readFileSync(path.join(BACKEND_DIR, "package.json"), "utf8")) as {
       dependencies: Record<string, string>;
       devDependencies: Record<string, string>;
+      scripts: Record<string, string>;
     };
+    assert.equal(pkg.dependencies["@prisma/client"], "7.10.0");
+    assert.equal(pkg.dependencies["@prisma/adapter-neon"], "7.10.0");
+    assert.equal(pkg.devDependencies.prisma, "7.10.0");
     const all = { ...pkg.dependencies, ...pkg.devDependencies };
-    for (const banned of ["prisma", "@prisma/client", "@prisma/adapter-neon", "pg", "postgres", "@lucia-auth", "better-auth", "mongoose", "redis", "ioredis"]) {
+    for (const banned of ["pg", "postgres", "@lucia-auth", "better-auth", "mongoose", "redis", "ioredis"]) {
       assert.ok(!(banned in all), `banned dependency present: ${banned}`);
     }
+    assert.equal(pkg.scripts["prisma:generate"], "prisma generate");
+    assert.ok(!("postinstall" in pkg.scripts), "Stage 13 does not add a postinstall hook");
   });
 });
 

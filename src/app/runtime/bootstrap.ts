@@ -95,6 +95,7 @@ export async function bootstrapRuntime(): Promise<RuntimeInstance> {
       { ...collections, client },
       {
         corsOrigins: config.corsOrigins,
+        trustProxyHops: config.trustProxyHops,
         authConfig: {
           jwtSecret: config.jwtSecret,
           jwtResetPasswordSecret: config.jwtResetPasswordSecret,

@@ -2,8 +2,8 @@
 
 **Status:** ACTIVE — 2026-10-07
 **Scope:** this repository only (`Lumi_Booking_Backend/`).
-**Stage:** Stage 12 — COMPLETE (design locked 2026-10-07; D-033 records Option A) + Stage 12.5 — COMPLETE 2026-10-07 as TypeScript Runtime Foundation (D-034; old Pass B/C SUPERSEDED by D-035) + Stage 13 — NEXT (PostgreSQL/Neon + Prisma foundation, D-035)
-**Target:** D-032 — PostgreSQL + Prisma ORM 7 + Neon preferred (NOT implemented).
+**Stage:** Stage 12.5 — COMPLETE 2026-10-07 (D-034) + Stage 13 — COMPLETE 2026-10-07 (D-036, stage13-dev only) + Stage 14 — NEXT
+**Target:** D-032 — PostgreSQL + Prisma ORM 7.10.0 foundation is local. MongoDB remains the authoritative application database.
 **Deployment (D-035 ACTIVE):** existing production (`luminedge-server` + MongoDB) stays live and untouched. Stage 13+ work targets local/new staging infrastructure — NEVER old-production conversion. Do not deploy this backend over the current production project; do not Preview against it.
 
 **Stage 11 closure (2026-10-07):** Stage 11 closed with accepted sufficient
@@ -16,13 +16,12 @@ explicit limitation; 11.6 docs lock in
 **Stage 12 closure (2026-10-07):** relational + runtime design locked (D-033
 records Option A). **Stage 12.5 closure (2026-10-07):** TypeScript Runtime
 Foundation COMPLETE (D-034; old Pass B/C SUPERSEDED by D-035 — no activation
-inside existing production). Do not create Prisma/PostgreSQL implementation
-unless the explicit stage task authorizes it; Stage 13 owns first foundation
-implementation against local/new staging infrastructure. MongoDB remains the
+inside existing production). Stage 13 foundation is applied on Neon branch
+stage13-dev only. MongoDB remains the
 current production source of truth until the controlled Stage 22 cutover;
 Stage 17 is rehearsal/readiness only. Interactive
-$transaction execution against Neon is NOT proven — Stage 13 staging proof
-required before booking designs become implementation-approved.
+$transaction commit, rollback, and Serializable isolation were proven on
+stage13-dev in Stage 13. Booking workflow designs remain Stage 16.
 
 ## 1. Workspace context (not tracked by this repo's Git)
 
@@ -105,10 +104,11 @@ live in repositories only — never in controllers.
 
 ```text
 pnpm typecheck
-pnpm test                    (600/600 current; 557/557 was the Stage 10.5 baseline)
+pnpm test                    (612/612)
 pnpm test:characterization   (119/119 legacy contracts)
-pnpm test:architecture       (213/213)
+pnpm test:architecture       (225/225)
 pnpm test:transaction        (20/20, real ephemeral replica set)
+pnpm test:postgres           (1/1, Neon branch stage13-dev only)
 git diff --check
 ```
 

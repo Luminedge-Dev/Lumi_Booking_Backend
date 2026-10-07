@@ -1,0 +1,59 @@
+// Persistence rename bookingMock → bookings. API paths stay /bookings and
+// the Mongo collection name is unchanged.
+// userId and scheduleId are scalar ids. scheduleId has no foreign key while
+// schedule-delete behavior is unresolved. No location CHECKs, no booking
+// uniqueness, no transactionId uniqueness.
+
+model Booking {
+  id            String          @id
+  userId        String          @map("user_id")
+  scheduleId    String?         @map("schedule_id")
+  slotId        String?         @map("slot_id")
+  name          String
+  location      BookingLocation
+  bookingDate   DateTime        @map("booking_date") @db.Date
+  status        BookingStatus
+  attendance    String?
+  testType      TestType        @map("test_type")
+  testSystem    String?         @map("test_system")
+  testTime      String?         @map("test_time")
+  startTime     String?         @map("start_time")
+  endTime       String?         @map("end_time")
+  teacherL      String?         @map("teacher_l")
+  teacherLEmail String?         @map("teacher_l_email")
+  teacherR      String?         @map("teacher_r")
+  teacherREmail String?         @map("teacher_r_email")
+  teacherW      String?         @map("teacher_w")
+  teacherWEmail String?         @map("teacher_w_email")
+  teacherS      String?         @map("teacher_s")
+  teacherSEmail String?         @map("teacher_s_email")
+  trfEmailed    Boolean?        @map("trf_emailed")
+  trfEmailAt    DateTime?       @map("trf_email_at") @db.Timestamptz(3)
+
+  @@index([userId], map: "ix_bookings_user_id")
+  @@index([scheduleId], map: "ix_bookings_schedule_id")
+  @@map("bookings")
+}
+
+// Future authoritative teacher assignment. Booking teacher* columns stay
+// compatibility fields. No foreign key until a delete action is approved.
+
+model TeacherAssignment {
+  id            String  @id @default(uuid()) @db.Uuid
+  userId        String  @map("user_id")
+  legacyKey     String  @map("legacy_key")
+  bookingId     String? @map("booking_id")
+  scheduleId    String? @map("schedule_id")
+  teacherL      String? @map("teacher_l")
+  teacherLEmail String? @map("teacher_l_email")
+  teacherR      String? @map("teacher_r")
+  teacherREmail String? @map("teacher_r_email")
+  teacherW      String? @map("teacher_w")
+  teacherWEmail String? @map("teacher_w_email")
+  teacherS      String? @map("teacher_s")
+  teacherSEmail String? @map("teacher_s_email")
+
+  @@index([userId, legacyKey], map: "ix_teacher_assignments_user_id_legacy_key")
+  @@index([bookingId], map: "ix_teacher_assignments_booking_id")
+  @@map("teacher_assignments")
+}

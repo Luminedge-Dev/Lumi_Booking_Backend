@@ -1,0 +1,41 @@
+// courseId and ScheduleSlot.scheduleId are scalar Mongo ids.
+// No foreign keys: Course → Schedule and Schedule → slot delete actions
+// are not approved in the relational plan.
+
+model Schedule {
+  id         String         @id
+  name       String
+  courseId   String         @map("course_id")
+  startDate  DateTime       @map("start_date") @db.Date
+  endDate    DateTime       @map("end_date") @db.Date
+  testType   TestType       @map("test_type")
+  testSystem String?        @map("test_system")
+  status     ScheduleStatus
+  createdAt  DateTime       @map("created_at") @db.Timestamptz(3)
+
+  @@index([courseId], map: "ix_schedules_course_id")
+  @@map("schedules")
+}
+
+model ScheduleSlot {
+  id            String @id @default(uuid()) @db.Uuid
+  scheduleId    String @map("schedule_id")
+  position      Int
+  slotId        String @map("slot_id")
+  seatsLeft     Int    @map("seats_left")
+  capacityTotal Int    @map("capacity_total")
+  startTime     String @map("start_time")
+  endTime       String @map("end_time")
+
+  @@unique([scheduleId, slotId], map: "uq_schedule_slots_schedule_id_slot_id")
+  @@index([scheduleId], map: "ix_schedule_slots_schedule_id")
+  @@map("schedule_slots")
+}
+
+// Per-schedule allocator foundation. Not used by schedule creation in Stage 13.
+model SlotCounter {
+  scheduleId String @id @map("schedule_id")
+  nextN      Int    @map("next_n")
+
+  @@map("slot_counters")
+}

@@ -71,7 +71,7 @@ function appWith(usersCollection: FakeUsersCollection) {
     bookingMockCollection: throwingCollection("bookingMockCollection") as unknown as Collection<Document>,
     client: {} as MongoClient,
   };
-  return createApp(dependencies, { authConfig: fakeAuthConfig() });
+  return createApp(dependencies, { corsOrigins: ["http://localhost:3000"], trustProxyHops: 1, authConfig: fakeAuthConfig() });
 }
 
 async function hash(password: string, rounds: number): Promise<string> {

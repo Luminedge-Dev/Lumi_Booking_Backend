@@ -1,0 +1,27 @@
+// feedback and marks stay JSON. Their shapes are open in the canonical contract.
+// Owner ids are scalars. No foreign keys.
+
+model FeedbackEntry {
+  id         String    @id @default(uuid()) @db.Uuid
+  userId     String    @map("user_id")
+  legacyKey  String    @map("legacy_key")
+  segment    String
+  feedback   Json?
+  marks      Json?
+  admin      String?
+  recordedAt DateTime? @map("recorded_at") @db.Timestamptz(3)
+
+  @@index([userId, legacyKey], map: "ix_feedback_entries_user_id_legacy_key")
+  @@map("feedback_entries")
+}
+
+model FeedbackStatus {
+  id        String  @id @default(uuid()) @db.Uuid
+  userId    String  @map("user_id")
+  legacyKey String  @map("legacy_key")
+  segment   String
+  complete  Boolean @default(false)
+
+  @@unique([userId, legacyKey, segment], map: "uq_feedback_status_user_id_legacy_key_segment")
+  @@map("feedback_status")
+}

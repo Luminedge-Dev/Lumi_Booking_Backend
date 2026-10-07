@@ -13,14 +13,15 @@ import { requestObservability } from "./app/middleware/request-observability";
 import { createApiRouter } from "./app/router";
 
 export interface AppOptions {
-  corsOrigins?: string;
+  corsOrigins: readonly string[];
+  trustProxyHops: number;
   authConfig: AuthConfig;
 }
 
 export function createApp(dependencies: AppDependencies, options: AppOptions): Application {
   const app = express();
 
-  app.set("trust proxy", 1);
+  app.set("trust proxy", options.trustProxyHops);
 
   app.use(requestIdMiddleware);
   app.use(requestObservability);

@@ -1,0 +1,46 @@
+// Verified admin-section and TRF-email fields only. Owner ids are scalars.
+// No foreign keys and no new workflow rules.
+
+model AdminSection {
+  id               String    @id @default(uuid()) @db.Uuid
+  userId           String    @map("user_id")
+  legacyKey        String    @map("legacy_key")
+  overallScore     String?   @map("overall_score")
+  proficiencyLevel String?   @map("proficiency_level")
+  resultDate       String?   @map("result_date")
+  schemeCode       String?   @map("scheme_code")
+  adminComments    String?   @map("admin_comments")
+  adminSignature   String?   @map("admin_signature")
+  centreName       String?   @map("centre_name")
+  testDate         String?   @map("test_date")
+  updatedAt        DateTime? @map("updated_at") @db.Timestamptz(3)
+
+  @@unique([userId, legacyKey], map: "uq_admin_sections_user_id_legacy_key")
+  @@map("admin_sections")
+}
+
+model TrfEmail {
+  id           String    @id @default(uuid()) @db.Uuid
+  userId       String    @map("user_id")
+  legacyKey    String    @map("legacy_key")
+  lastSentAt   DateTime? @map("last_sent_at") @db.Timestamptz(3)
+  lastSubject  String?   @map("last_subject")
+  lastFilename String?   @map("last_filename")
+  toAddress    String?   @map("to_address")
+
+  @@unique([userId, legacyKey], map: "uq_trf_emails_user_id_legacy_key")
+  @@map("trf_emails")
+}
+
+model TrfEmailHistory {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @map("user_id")
+  legacyKey String    @map("legacy_key")
+  sentAt    DateTime? @map("sent_at") @db.Timestamptz(3)
+  subject   String?
+  filename  String?
+  toAddress String?   @map("to_address")
+
+  @@index([userId, legacyKey], map: "ix_trf_email_history_user_id_legacy_key")
+  @@map("trf_email_history")
+}

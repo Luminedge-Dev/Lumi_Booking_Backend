@@ -1,0 +1,10 @@
+model Course {
+  id               String    @id
+  name             String
+  image            String
+  homeBasedSystems String[]  @default([]) @map("home_based_systems")
+  createdAt        DateTime? @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime? @map("updated_at") @db.Timestamptz(3)
+
+  @@map("courses")
+}

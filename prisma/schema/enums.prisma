@@ -1,0 +1,39 @@
+// Closed sets from context/canonical-data-contract.md only.
+// attendance, testSystem, sex, and profileChangeRequestStatus stay strings.
+
+enum UserRole {
+  user
+  teacher
+  bdm
+  admin
+}
+
+enum UserStatus {
+  active
+  checked
+  completed
+  blocked
+}
+
+enum BookingStatus {
+  Present
+  Absent
+  pending
+  completed
+  missed
+}
+
+enum TestType {
+  ComputerBased @map("Computer-Based")
+  PaperBased    @map("Paper-Based")
+}
+
+enum BookingLocation {
+  Home
+  TestCenter @map("Test Center")
+}
+
+enum ScheduleStatus {
+  Scheduled
+  Cancelled
+}

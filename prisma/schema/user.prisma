@@ -1,0 +1,21 @@
+// User-owned children. User itself lives in auth.prisma.
+// userId is a scalar Mongo id. No foreign key: the relational plan does not
+// approve a delete action for User → child rows.
+
+model MockAllocation {
+  id                 String    @id @default(uuid()) @db.Uuid
+  userId             String    @map("user_id")
+  transactionId      String?   @map("transaction_id")
+  mock               Int?
+  mockType           String?   @map("mock_type")
+  mrValidation       String?   @map("mr_validation")
+  mrValidationExpiry DateTime? @map("mr_validation_expiry") @db.Timestamptz(3)
+  testSystem         String?   @map("test_system")
+  testType           String?   @map("test_type")
+  emailReminderSent  Boolean?  @map("email_reminder_sent")
+  createdAt          DateTime? @map("created_at") @db.Timestamptz(3)
+  updatedAt          DateTime? @map("updated_at") @db.Timestamptz(3)
+
+  @@index([userId], map: "ix_mock_allocations_user_id")
+  @@map("mock_allocations")
+}

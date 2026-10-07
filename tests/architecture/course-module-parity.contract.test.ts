@@ -40,7 +40,7 @@ function appWith(coursesCollection: FakeCoursesCollection) {
     bookingMockCollection: throwingCollection("bookingMockCollection") as unknown as Collection<Document>,
     client: {} as MongoClient,
   };
-  return createApp(dependencies, { authConfig: fakeAuthConfig() });
+  return createApp(dependencies, { corsOrigins: ["http://localhost:3000"], trustProxyHops: 1, authConfig: fakeAuthConfig() });
 }
 
 describe("native Course module parity: GET /api/v1/courses", () => {

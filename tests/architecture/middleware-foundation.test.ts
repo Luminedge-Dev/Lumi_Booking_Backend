@@ -10,7 +10,8 @@ import {
   GLOBAL_LIMITER_POLICY,
   createAuthRateLimiter,
 } from "../../src/app/middleware/rate-limit";
-import { resolveAllowedOrigins, CORS_REJECTION_MESSAGE } from "../../src/app/middleware/cors";
+import { CORS_REJECTION_MESSAGE, createCorsMiddleware } from "../../src/app/middleware/cors";
+import { parseCorsOriginsEnv } from "../../src/app/config/env.utils";
 import { notFoundHandler } from "../../src/app/middleware/not-found";
 import { errorHandler } from "../../src/app/middleware/error-handler";
 import { validateRequest } from "../../src/app/middleware/validate-request";
@@ -55,19 +56,37 @@ describe("rate-limit policy/parity (architecture)", () => {
 });
 
 describe("cors helpers (architecture)", () => {
-  it("resolveAllowedOrigins falls back to the default origin list when no override is given", () => {
-    assert.deepEqual(resolveAllowedOrigins(undefined), [
-      "https://luminedge.io",
-      "https://crm.luminedge.io",
-      "http://localhost:3000",
-    ]);
-  });
-
-  it("resolveAllowedOrigins splits and trims a comma-separated override", () => {
+  it("parseCorsOriginsEnv trims, drops empties, and collapses duplicates", () => {
     assert.deepEqual(
-      resolveAllowedOrigins(" https://a.example , https://b.example "),
+      parseCorsOriginsEnv(" https://a.example , https://b.example ,, https://a.example/ "),
       ["https://a.example", "https://b.example"]
     );
+  });
+
+  it("rejects a path, query, or hash", () => {
+    assert.throws(() => parseCorsOriginsEnv("https://a.example/app"), /CORS_ORIGINS/);
+    assert.throws(() => parseCorsOriginsEnv("https://a.example/?q=1"), /CORS_ORIGINS/);
+    assert.throws(() => parseCorsOriginsEnv("https://a.example/#x"), /CORS_ORIGINS/);
+  });
+
+  it("middleware allows a configured origin, rejects another, and allows a missing Origin", async () => {
+    const app = express();
+    app.use(createCorsMiddleware(["https://a.example"]));
+    app.get("/", (_req, res) => res.status(200).json({ ok: true }));
+    app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+      if (err.message === CORS_REJECTION_MESSAGE) {
+        res.status(403).json({ message: "Origin not allowed" });
+        return;
+      }
+      res.status(500).json({ message: "unexpected" });
+    });
+
+    const allowed = await request(app).get("/").set("Origin", "https://a.example");
+    assert.equal(allowed.status, 200);
+    const rejected = await request(app).get("/").set("Origin", "https://evil.example");
+    assert.equal(rejected.status, 403);
+    const noOrigin = await request(app).get("/");
+    assert.equal(noOrigin.status, 200);
   });
 });
 

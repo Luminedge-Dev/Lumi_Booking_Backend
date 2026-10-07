@@ -93,7 +93,11 @@ function buildCandidate(seed: Seed) {
     bookingMockCollection: throwingCollection("bookingMockCollection") as unknown as Collection<Document>,
     client: {} as MongoClient,
   };
-  return createCandidateApp(dependencies, { authConfig: fakeAuthConfig() });
+  return createCandidateApp(dependencies, {
+    corsOrigins: ["http://localhost:3000"],
+    trustProxyHops: 1,
+    authConfig: fakeAuthConfig(),
+  });
 }
 
 function signToken(userId: ObjectId, role = "user"): string {

@@ -34,24 +34,32 @@ describe("Express request typing is centralized (architecture)", () => {
 });
 
 describe("deferred-stack ban (architecture)", () => {
-  it("no Prisma, Better Auth, QueryBuilder, or generated-client import exists under src/", () => {
+  it("Prisma stays inside the database layer; Better Auth runtime, QueryBuilder, and Lucia stay absent", () => {
+    const prismaOwners = new Set([
+      path.normalize("app/database/prisma.ts"),
+      path.normalize("app/database/transaction.ts"),
+    ]);
     const offenders: string[] = [];
     const visit = (dir: string): void => {
       for (const entry of readDir(dir)) {
-        if (entry.endsWith(".ts")) {
-          const content = readFileSync(entry, "utf8");
-          // Strip comments so prose naming what is forbidden is not flagged.
-          const code = content
-            .replace(/\/\*[\s\S]*?\*\//g, "")
-            .split("\n")
-            .map((line) => {
-              const idx = line.indexOf("//");
-              return idx === -1 ? line : line.slice(0, idx);
-            })
-            .join("\n");
-          if (/prisma|better-auth|BetterAuth|QueryBuilder|queryHelper|@lucia/i.test(code)) {
-            offenders.push(path.relative(SRC_DIR, entry));
-          }
+        if (!entry.endsWith(".ts")) continue;
+        if (entry.includes(`${path.sep}generated${path.sep}prisma${path.sep}`)) continue;
+        const content = readFileSync(entry, "utf8");
+        const code = content
+          .replace(/\/\*[\s\S]*?\*\//g, "")
+          .split("\n")
+          .map((line) => {
+            const idx = line.indexOf("//");
+            return idx === -1 ? line : line.slice(0, idx);
+          })
+          .join("\n");
+        const relative = path.normalize(path.relative(SRC_DIR, entry));
+        const mentionsPrisma = /prisma|@prisma/i.test(code);
+        if (mentionsPrisma && !prismaOwners.has(relative)) {
+          offenders.push(relative);
+        }
+        if (/better-auth|BetterAuth|QueryBuilder|queryHelper|@lucia/i.test(code)) {
+          offenders.push(relative);
         }
       }
     };

@@ -507,7 +507,7 @@ describe("TS candidate (src/app.ts) real-Mongo transaction smoke", () => {
   it("Home booking commits through the candidate app's real composition root with a real MongoClient", async () => {
     const actor = await seedUser(testDb.collections.usersCollection, { mock: 1 });
     const dependencies: AppDependencies = { ...testDb.collections, client: testDb.client };
-    const app = createApp(dependencies, { authConfig: fakeAuthConfig() });
+    const app = createApp(dependencies, { corsOrigins: ["http://localhost:3000"], trustProxyHops: 1, authConfig: fakeAuthConfig() });
 
     const res = await request(app)
       .post("/api/v1/user/book-slot")
@@ -541,6 +541,8 @@ describe("TS candidate (src/app.ts) full transaction-invariant proof", () => {
       client: testDb.client,
     };
     return createApp(dependencies, {
+      corsOrigins: ["http://localhost:3000"],
+      trustProxyHops: 1,
       authConfig: {
         jwtSecret: "test-only-secret",
         jwtResetPasswordSecret: "test-only-reset-secret",

@@ -1,0 +1,104 @@
+// Better Auth-compatible identity tables (D-036).
+// Runtime authentication stays JWT/bcrypt until Stage 18.
+// Better Auth is not installed and these tables are unused by the application.
+//
+// Field set checked against the Better Auth Prisma adapter core schema
+// (User, Session, Account, Verification) and the core database concept doc.
+// Luminedge adaptations: Mongo string ids, legacy bcrypt password on User,
+// role/status/profile columns, no email uniqueness.
+// Session and Account onDelete: Cascade is the Better Auth child-table
+// action from that schema. It is not a Luminedge domain delete policy.
+// Table names are Luminedge snake_case plurals, not Better Auth's singular defaults.
+
+model User {
+  id            String   @id
+  name          String
+  email         String
+  emailVerified Boolean  @default(false) @map("email_verified")
+  image         String?
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt     DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  // Legacy bcrypt hash. Required so Stages 15–17 can authenticate before Stage 18.
+  password  String
+  role      UserRole
+  // Nullable: one audited null is rejected by the normalizer and must not be defaulted.
+  status    UserStatus?
+  isDeleted Boolean     @default(false) @map("is_deleted")
+
+  dateOfBirth                String?   @map("date_of_birth")
+  contactNo                  String?   @map("contact_no")
+  passportNumber             String?   @map("passport_number")
+  sex                        String?
+  result                     Json?
+  mock                       Int       @default(0)
+  totalMock                  Int       @default(0) @map("total_mock")
+  mockType                   String?   @map("mock_type")
+  testSystem                 String?   @map("test_system")
+  testType                   String?   @map("test_type")
+  profileChangeRequestStatus String?   @map("profile_change_request_status")
+  profileEditNote            String?   @map("profile_edit_note")
+  needPasswordChange         Boolean?  @map("need_password_change")
+  passwordChangedAt          DateTime? @map("password_changed_at") @db.Timestamptz(3)
+  transactionId              String?   @map("transaction_id")
+  teacherLEmail              String?   @map("teacher_l_email")
+  teacherREmail              String?   @map("teacher_r_email")
+  teacherWEmail              String?   @map("teacher_w_email")
+  teacherSEmail              String?   @map("teacher_s_email")
+  lastTrfEmailAt             DateTime? @map("last_trf_email_at") @db.Timestamptz(3)
+  budget                     Json?
+
+  sessions Session[]
+  accounts Account[]
+
+  @@index([email], map: "ix_users_email")
+  @@map("users")
+}
+
+model Session {
+  id        String   @id
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(3)
+  token     String   @unique
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+  ipAddress String?  @map("ip_address")
+  userAgent String?  @map("user_agent")
+  userId    String   @map("user_id")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([userId], map: "ix_sessions_user_id")
+  @@map("sessions")
+}
+
+model Account {
+  id                    String    @id
+  accountId             String    @map("account_id")
+  providerId            String    @map("provider_id")
+  userId                String    @map("user_id")
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  accessToken           String?   @map("access_token")
+  refreshToken          String?   @map("refresh_token")
+  idToken               String?   @map("id_token")
+  accessTokenExpiresAt  DateTime? @map("access_token_expires_at") @db.Timestamptz(3)
+  refreshTokenExpiresAt DateTime? @map("refresh_token_expires_at") @db.Timestamptz(3)
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt             DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@unique([providerId, accountId], map: "uq_accounts_provider_id_account_id")
+  @@index([userId], map: "ix_accounts_user_id")
+  @@map("accounts")
+}
+
+model Verification {
+  id         String   @id
+  identifier String
+  value      String
+  expiresAt  DateTime @map("expires_at") @db.Timestamptz(3)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@index([identifier], map: "ix_verifications_identifier")
+  @@map("verifications")
+}

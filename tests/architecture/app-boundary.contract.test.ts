@@ -39,11 +39,12 @@ function fakeDependencies(): AppDependencies {
   };
 }
 
-function createTsTestApp(corsOrigins?: string, optionsOverride: Partial<AppOptions> = {}): TestApp {
-  // No corsOrigins override -> exercises the same DEFAULT_ORIGINS fallback the
-  // legacy contract test relies on.
+const TEST_ORIGINS = ["http://localhost:3000"];
+
+function createTsTestApp(corsOrigins: readonly string[] = TEST_ORIGINS, optionsOverride: Partial<AppOptions> = {}): TestApp {
   return createApp(fakeDependencies(), {
     corsOrigins,
+    trustProxyHops: 1,
     authConfig: fakeAuthConfig(),
     ...optionsOverride,
   }) as unknown as TestApp;
@@ -89,9 +90,9 @@ describe("src/app.ts boundary (architecture parity)", () => {
     assert.equal(res.status, 200);
   });
 
-  it("a custom corsOrigins override is genuinely used, replacing the defaults", async () => {
+  it("a custom corsOrigins override is genuinely used, replacing the supplied allowlist", async () => {
     const customOrigin = "https://custom.example";
-    const appWithOverride = createTsTestApp(customOrigin);
+    const appWithOverride = createTsTestApp([customOrigin]);
 
     const allowed = await request(appWithOverride).get("/").set("Origin", customOrigin);
     assert.equal(allowed.status, 200);
@@ -110,9 +111,13 @@ describe("src/app.ts boundary (architecture parity)", () => {
     assert.equal(res.headers["x-powered-by"], undefined);
   });
 
-  it("trust proxy is enabled for correct req.ip / secure-cookie detection behind Vercel", () => {
-    const app = createApp(fakeDependencies(), { authConfig: fakeAuthConfig() });
-    assert.equal(app.get("trust proxy"), 1);
+  it("trust proxy uses the hop count passed to createApp", () => {
+    const app = createApp(fakeDependencies(), {
+      corsOrigins: TEST_ORIGINS,
+      trustProxyHops: 2,
+      authConfig: fakeAuthConfig(),
+    });
+    assert.equal(app.get("trust proxy"), 2);
   });
 
   it("AUTH_RATE_LIMIT_PATHS still matches the legacy 4-path contract exactly", () => {
@@ -128,7 +133,11 @@ describe("src/app.ts boundary (architecture parity)", () => {
   });
 
   it("global limiter is wired before routes and auth limiter targets the auth-only paths", () => {
-    const app = createApp(fakeDependencies(), { authConfig: fakeAuthConfig() });
+    const app = createApp(fakeDependencies(), {
+      corsOrigins: TEST_ORIGINS,
+      trustProxyHops: 1,
+      authConfig: fakeAuthConfig(),
+    });
     const stack = (app as unknown as { _router: { stack: Array<{ handle: unknown; route?: unknown; regexp: RegExp }> } })
       ._router.stack;
 
