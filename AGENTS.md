@@ -1,9 +1,21 @@
 # AGENTS.md — Luminedge Booking Backend (repo-scoped operating rules)
 
-**Status:** ACTIVE — 2026-10-06
+**Status:** ACTIVE — 2026-10-07
 **Scope:** this repository only (`luminedge_booking_backend/`).
-**Stage:** Stage 11 — Production Workload & Resource Baseline — IN PROGRESS (TELEMETRY DEFERRED) + Stage 12 — DESIGN ONLY (parallel).
+**Stage:** Stage 11 — Production Workload & Resource Baseline — COMPLETE (ACCEPTED SUFFICIENT EVIDENCE; 11.6 lock 2026-10-07) + Stage 12 — CURRENT (DESIGN ONLY)
 **Target:** D-032 — PostgreSQL + Prisma ORM 7 + Neon preferred (NOT implemented).
+
+**Stage 11 closure (2026-10-07):** Stage 11 closed with accepted sufficient
+production evidence (11.1 PASS; 11.2 project-level Vercel measured, route/
+function-level Observability unavailable; 11.3 source-DB cluster facts and
+scale measured, tier-limited CPU/memory/IOPS unavailable; 11.4 PASS; 11.5
+system-level attribution accepted, route-specific production attribution an
+explicit limitation; 11.6 docs lock in
+`context/operations/production-resource-baseline.md`). Stage 12 is CURRENT —
+DESIGN ONLY. Do not create Prisma/PostgreSQL implementation unless the Stage
+12 task explicitly authorizes an executable compatibility probe; Stage 13 owns
+first foundation implementation. MongoDB remains authoritative until
+controlled Stage 17 cutover.
 
 ## 1. Workspace context (not tracked by this repo's Git)
 
