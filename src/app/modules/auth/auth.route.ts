@@ -2,11 +2,6 @@ import { Router } from "express";
 import type { AuthController } from "./auth.controller";
 import type { AuthMiddleware } from "./auth.middleware";
 
-// Paths/methods/native middleware binding only -- no business logic or Mongo
-// access here (AGENTS.md layer rules). Exact same five paths as
-// routes/auth.routes.js; this router replaces that file only inside the TS
-// candidate (src/app.ts) -- production (index.js -> app.js) keeps using the
-// original file directly and never imports this.
 export function createAuthRouter(controller: AuthController, middleware: AuthMiddleware): Router {
   const router = Router();
 

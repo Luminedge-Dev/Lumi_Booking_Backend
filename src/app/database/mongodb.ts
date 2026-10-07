@@ -1,14 +1,6 @@
 import { MongoClient, type Db } from "mongodb";
 
-// Independent of config/db.js on purpose: config/db.js constructs its MongoClient
-// eagerly at module load (`new MongoClient(process.env.MONGODB_URI)` runs the
-// instant the file is required), which is exactly what makes it unsafe to import
-// from a side-effect-free module. This file mirrors its connection tuning and
-// db name, but only constructs anything lazily, on first call.
-//
-// Configuration ownership stays centralized: this module takes the connection
-// string as a parameter and never reads process.env itself. src/server.ts resolves
-// it once via getConfig().mongodbUri and passes it in.
+// Lazily constructed: config/db.js builds its client eagerly at import, so it cannot be imported here.
 const MONGO_CLIENT_OPTIONS = {
   serverSelectionTimeoutMS: 5000,
   connectTimeoutMS: 5000,
@@ -55,10 +47,10 @@ export function getDatabase(): Db {
   return db;
 }
 
-// Mirrors config/db.js's ensureHealthy(): no-op when healthy, otherwise closes
-// and reopens the same client instance so a wedged pool recovers in place.
+// No-op when healthy; otherwise reopens the same client so a wedged pool recovers in place.
 export async function ensureHealthy(uri: string): Promise<void> {
   if (isHealthy) return;
+  console.warn("⚠️  Mongo connection unhealthy — reconnecting before serving request.");
   if (client) {
     try {
       await client.close(true);

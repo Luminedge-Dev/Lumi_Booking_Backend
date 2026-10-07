@@ -1,15 +1,24 @@
-import { Router, type RequestHandler } from "express";
+import { Router, type Request, type RequestHandler } from "express";
 import type { ScheduleController } from "./schedule.controller";
 import type { AuthMiddleware } from "../auth/auth.middleware";
+import type { AuthActor } from "../auth/auth.types";
 import { isValidScheduleIdParam } from "./schedule.validation";
+import * as authz from "./schedule.authorization";
 
-// Path/method, the correct native guard per route, thin validation
-// adapters, controller call only -- no Mongo, no business logic.
-//
-// No verifyToken + verifyAdmin / verifyToken + verifyStaff chaining:
-// verifyAdmin/verifyStaff already call verifyToken internally (confirmed
-// directly from auth.middleware.ts, same reasoning Stage 8 applied to
-// /users/with-profile-request).
+function requireAuthorized(
+  predicate: (actor: AuthActor, targetUserId: string) => boolean,
+  getTargetUserId: (req: Request) => string | undefined
+): RequestHandler {
+  return (req, res, next) => {
+    const target = getTargetUserId(req);
+    if (!target || !predicate(req.user ?? {}, target)) {
+      res.status(403).json({ message: "Forbidden" });
+      return;
+    }
+    next();
+  };
+}
+
 function validateScheduleIdParam(invalidBody: Record<string, unknown>): RequestHandler {
   return (req, res, next) => {
     if (!isValidScheduleIdParam(req.params.id)) {
@@ -25,18 +34,9 @@ export function createScheduleRouter(controller: ScheduleController, authMiddlew
 
   router.post("/admin/create-schedule", authMiddleware.verifyAdmin, controller.createSchedule);
 
-  // MANDATORY ORDERING: this route MUST be registered before
-  // GET /schedule/:date/:courseId, or a request to
-  // /schedule/course/<id> would be captured by the generic daily route as
-  // date="course", courseId="<id>". Both routes are native and both are
-  // verifyToken-gated -- no fallthrough guard is needed, this is purely a
-  // within-file registration-order requirement (locked by a dedicated
-  // architecture test).
+  // Keep the specific course route before the generic schedule route.
   router.get("/schedule/course/:courseId", authMiddleware.verifyToken, controller.getByCourseAndMonth);
 
-  // NO new validation beyond legacy behavior -- confirmed by direct code
-  // read that this route takes date/courseId as raw path-param strings
-  // with no ObjectId/date-format check anywhere in the legacy handler.
   router.get("/schedule/:date/:courseId", authMiddleware.verifyToken, controller.getByDateAndCourse);
 
   router.get("/admin/get-schedules", authMiddleware.verifyStaff, controller.listAdmin);
@@ -46,6 +46,13 @@ export function createScheduleRouter(controller: ScheduleController, authMiddlew
     authMiddleware.verifyAdmin,
     validateScheduleIdParam({ message: "Invalid schedule ID format." }),
     controller.deleteSchedule
+  );
+
+  router.get(
+    "/schedule/:userId",
+    authMiddleware.verifyToken,
+    requireAuthorized(authz.canAccessUserSchedules, (req) => req.params.userId),
+    controller.getByUserId
   );
 
   return router;

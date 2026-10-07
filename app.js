@@ -17,7 +17,7 @@ const scheduleRoutes = require("./routes/schedule.routes");
 // Allowed browser origins. Driven by CORS_ORIGINS (comma-separated) so prod
 // never ships a hardcoded test domain; falls back to the known production
 // origins plus local dev.
-const DEFAULT_ORIGINS = ["https://luminedge.io", "https://crm.luminedge.io", "http://localhost:3000"];
+const DEFAULT_ORIGINS = ["https://luminedgbookingportal.netlify.app", "http://localhost:3000"];
 const ALLOWED_ORIGINS = (process.env.CORS_ORIGINS
   ? process.env.CORS_ORIGINS.split(",").map((o) => o.trim()).filter(Boolean)
   : DEFAULT_ORIGINS);

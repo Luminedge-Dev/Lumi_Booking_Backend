@@ -1,11 +1,10 @@
 import type { NextFunction, Request, Response } from "express";
 import { ObjectId } from "mongodb";
+import { logger } from "../../shared/logger/logger";
 import type { ScheduleService } from "./schedule.service";
 import { parseMonthParam, parsePaginationParams, parseAdminListFilter } from "./schedule.validation";
 import { ScheduleQueryTimeoutError } from "./schedule.types";
 
-// req/res boundary only -- maps service-layer results to the exact legacy
-// status/body. No Mongo, no business logic.
 export class ScheduleController {
   constructor(private readonly service: ScheduleService) {}
 
@@ -31,7 +30,7 @@ export class ScheduleController {
         failedSchedules: failed,
       });
     } catch (err) {
-      console.error("create-schedule error:", err);
+      logger.error("schedule_create_error", { error: (err as Error)?.message });
       res.status(500).json({ success: false, message: "Server error while creating schedules" });
     }
   };
@@ -42,17 +41,11 @@ export class ScheduleController {
       const schedules = await this.service.getByDateAndCourse(date, courseId);
       res.json({ schedules });
     } catch (err) {
-      console.error("schedule by date error:", err);
+      logger.error("schedule_date_read_error", { error: (err as Error)?.message });
       res.status(500).json({ message: "Failed to load schedules" });
     }
   };
 
-  // New Stage 9 contract. Re-derives/re-validates month + courseId here
-  // (cheap, pure) rather than trusting a value stashed on req by route
-  // middleware -- same pattern Stage 8's controller used for
-  // request-profile-edit's body. Canonicalizes a valid ObjectId-shaped
-  // courseId to its hex string before matching the persisted STRING
-  // courseId field.
   getByCourseAndMonth = async (req: Request, res: Response): Promise<void> => {
     const range = parseMonthParam(req.query.month);
     if (!range) {
@@ -69,15 +62,12 @@ export class ScheduleController {
       const schedules = await this.service.getByCourseAndMonth(canonicalCourseId, range);
       res.json({ schedules });
     } catch (err) {
-      console.error("schedule by month error:", err);
+      logger.error("schedule_month_read_error", { error: (err as Error)?.message });
       res.status(500).json({ message: "Failed to load schedules" });
     }
   };
 
-  // The ONLY place that knows ScheduleQueryTimeoutError means
-  // 504 {message:"Query timed out."} for this endpoint specifically.
-  // Any other error falls through to next(err) -- the shared error
-  // handler, matching legacy's own next(err) fallthrough exactly.
+  // Only this endpoint maps ScheduleQueryTimeoutError to 504; other errors fall through to next(err).
   listAdmin = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const { page, limit, skip } = parsePaginationParams(req.query as Record<string, unknown>);
@@ -93,8 +83,18 @@ export class ScheduleController {
     }
   };
 
-  deleteSchedule = async (req: Request, res: Response): Promise<void> => {
-    const { id } = req.params;
+  getByUserId = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const { userId } = req.params;
+      const schedules = await this.service.getByUserId(userId);
+      res.json({ schedules });
+    } catch (err) {
+      logger.error("schedule_user_read_error", { error: (err as Error)?.message });
+      res.status(500).json({ message: "Failed to load schedules." });
+    }
+  };
+
+  deleteSchedule = async (req: Request, res: Response): Promise<void> => {    const { id } = req.params;
     try {
       const deleted = await this.service.deleteById(id);
       if (!deleted) {
@@ -103,7 +103,7 @@ export class ScheduleController {
       }
       res.json({ success: true, message: "Schedule deleted successfully" });
     } catch (err) {
-      console.error("Error deleting schedule:", err);
+      logger.error("schedule_delete_error", { error: (err as Error)?.message });
       res.status(500).json({ message: "Error deleting schedule" });
     }
   };

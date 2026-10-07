@@ -1,10 +1,7 @@
 import type { CreateIndexesOptions, IndexSpecification } from "mongodb";
 import type { AppCollections } from "./database.types";
 
-// Reproduced verbatim from config/indexDefinitions.js (order, keys, and options
-// copied 1:1 — do not reorder, add, or remove entries during this parity
-// conversion). The original file remains the single source of truth for the
-// legacy runtime; this is an independent TypeScript copy for the new runtime path.
+// Keys/options mirror config/indexDefinitions.js; do not reorder or edit entries.
 interface IndexSpec {
   collection: "users" | "bookingMock" | "schedules";
   key: IndexSpecification;

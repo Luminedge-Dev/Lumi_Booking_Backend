@@ -5,15 +5,17 @@
   "main": "index.js",
   "packageManager": "pnpm@10.34.5",
   "scripts": {
-    "dev": "nodemon index.js",
-    "start": "node index.js",
+    "dev": "tsx --watch src/main.ts",
+    "dev:legacy": "nodemon index.js",
+    "start": "node --import=tsx src/main.ts",
+    "start:legacy": "node index.js",
     "typecheck": "tsc --noEmit",
     "test": "node --import=tsx --test --test-concurrency=1",
     "test:characterization": "node --import=tsx --test --test-concurrency=1 \"tests/characterization/**/*.test.ts\"",
     "test:architecture": "node --import=tsx --test --test-concurrency=1 \"tests/architecture/**/*.test.ts\"",
     "test:transaction": "node --import=tsx --test --test-concurrency=1 tests/transactions/transaction-foundation.transaction.ts"
   },
-  "author": "Luminedge_Developers",
+  "author": "ArnabSaga",
   "license": "ISC",
   "dependencies": {
     "@vercel/functions": "^3.9.9",

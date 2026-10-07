@@ -518,3 +518,220 @@ describe("TS candidate (src/app.ts) real-Mongo transaction smoke", () => {
     assert.equal(await testDb.collections.bookingMockCollection.countDocuments({}), 1);
   });
 });
+
+// ---------------------------------------------------------------------
+// Stage 12.5: candidate-app (src/app.ts) full invariant + concurrency
+// proof -- the TS composition root must prove its legacy-compatibility
+// boundary weakens none of the four permanent invariants before the
+// runtime cutover. Same real ephemeral replica set, same seeds, same
+// assertions as the legacy ss12-ss15 blocks above; only the app factory
+// differs (candidateApp vs legacyApp).
+//
+// Note: createApp() here mounts the real legacy booking/feedback routers
+// (which reuse module-level Router singletons), so repeated candidateApp()
+// calls accumulate duplicate identical handlers in this file's process --
+// harmless (the first matching handler responds), same as production's
+// single-mount behavior for the request under test.
+// ---------------------------------------------------------------------
+describe("TS candidate (src/app.ts) full transaction-invariant proof", () => {
+  function candidateApp(overrides: Partial<AppCollections> = {}) {
+    const dependencies: AppDependencies = {
+      ...testDb.collections,
+      ...overrides,
+      client: testDb.client,
+    };
+    return createApp(dependencies, {
+      authConfig: {
+        jwtSecret: "test-only-secret",
+        jwtResetPasswordSecret: "test-only-reset-secret",
+        jwtExpiresIn: "7d",
+        jwtResetPasswordTokenExpiresIn: "15m",
+        resetPasswordLink: "https://example.test/reset-password",
+        isProduction: false,
+      },
+    });
+  }
+
+  it("invariant 1 (candidate): Home booking insert + credit decrement commit together", async () => {
+    const actor = await seedUser(testDb.collections.usersCollection, { mock: 1 });
+    const app = candidateApp();
+    const res = await request(app)
+      .post("/api/v1/user/book-slot")
+      .set("Authorization", `Bearer ${signTestToken(actor._id as ObjectId)}`)
+      .send({ userId: (actor._id as ObjectId).toString(), location: "Home", bookingDate: "2026-11-01", testTime: "09:00" });
+
+    assert.equal(res.status, 200);
+    assert.equal(res.body.success, true);
+    assert.equal(await testDb.collections.bookingMockCollection.countDocuments({}), 1);
+    const updatedUser = await testDb.collections.usersCollection.findOne({ _id: actor._id as ObjectId });
+    assert.equal(updatedUser?.mock, 0);
+  });
+
+  it("invariant 2 (candidate): Test Center seat + credit + booking commit together", async () => {
+    const actor = await seedUser(testDb.collections.usersCollection, { mock: 1 });
+    const schedule = await seedSchedule();
+    const app = candidateApp();
+
+    const res = await request(app)
+      .post("/api/v1/user/book-slot")
+      .set("Authorization", `Bearer ${signTestToken(actor._id as ObjectId)}`)
+      .send({
+        userId: (actor._id as ObjectId).toString(),
+        location: "Test Center",
+        scheduleId: (schedule._id as ObjectId).toString(),
+        slotId: "1",
+        testType: "IELTS",
+        testSystem: "Academic",
+        name: "IELTS Course",
+      });
+
+    assert.equal(res.status, 200);
+    assert.equal(res.body.success, true);
+    const updatedSchedule = await testDb.collections.schedulesCollection.findOne({ _id: schedule._id as ObjectId });
+    assert.equal((updatedSchedule?.timeSlots as Array<{ slot: number }>)[0].slot, 0);
+    const updatedUser = await testDb.collections.usersCollection.findOne({ _id: actor._id as ObjectId });
+    assert.equal(updatedUser?.mock, 0);
+    assert.equal(await testDb.collections.bookingMockCollection.countDocuments({}), 1);
+  });
+
+  it("invariant 3 (candidate): cancellation delete + seat restore + credit restore commit together", async () => {
+    const actor = await seedUser(testDb.collections.usersCollection, { mock: 0 });
+    const actorId = actor._id as ObjectId;
+    const schedule = await seedSchedule({ timeSlots: [{ slotId: "1", slot: 0, startTime: "09:00:00", endTime: "10:00:00" }] });
+    const booking = await seedBooking({
+      userId: actorId.toString(),
+      scheduleId: (schedule._id as ObjectId).toString(),
+      slotId: "1",
+      location: "Test Center",
+    });
+
+    const app = candidateApp();
+    const res = await request(app)
+      .delete(`/api/v1/bookings/${(booking._id as ObjectId).toString()}`)
+      .set("Authorization", `Bearer ${signTestToken(actorId)}`);
+
+    assert.equal(res.status, 200);
+    assert.equal(await testDb.collections.bookingMockCollection.countDocuments({}), 0);
+    const updatedSchedule = await testDb.collections.schedulesCollection.findOne({ _id: schedule._id as ObjectId });
+    assert.equal((updatedSchedule?.timeSlots as Array<{ slot: number }>)[0].slot, 1);
+    const updatedUser = await testDb.collections.usersCollection.findOne({ _id: actorId });
+    assert.equal(updatedUser?.mock, 1);
+  });
+
+  it("invariant 4 (candidate): home teacher assignment keeps booking + user map aligned", async () => {
+    const admin = await seedUser(testDb.collections.usersCollection, { role: "admin" });
+    const owner = await seedUser(testDb.collections.usersCollection);
+    const booking = await seedBooking({ userId: (owner._id as ObjectId).toString(), location: "Home" });
+    const bookingId = (booking._id as ObjectId).toString();
+
+    const app = candidateApp();
+    const res = await request(app)
+      .put(`/api/v1/admin/bookings/${bookingId}/teacher`)
+      .set("Authorization", `Bearer ${signTestToken(admin._id as ObjectId, "admin")}`)
+      .send({ skill: "L", teacher: "Jane Doe", email: "Jane@Example.test" });
+
+    assert.equal(res.status, 200);
+    const updatedBooking = await testDb.collections.bookingMockCollection.findOne({ _id: booking._id as ObjectId });
+    assert.equal(updatedBooking?.teacherL, "Jane Doe");
+    assert.equal(updatedBooking?.teacherLEmail, "jane@example.test");
+    const updatedOwner = await testDb.collections.usersCollection.findOne({ _id: owner._id as ObjectId });
+    const teacherMap = (updatedOwner?.teachersBySchedule as Record<string, Record<string, string>> | undefined)?.[bookingId];
+    assert.equal(teacherMap?.teacherL, "Jane Doe");
+    assert.equal(teacherMap?.teacherLEmail, "jane@example.test");
+  });
+
+  it("concurrency (candidate): last-seat race commits exactly one booking, no oversell", async () => {
+    const userA = await seedUser(testDb.collections.usersCollection, { mock: 1 });
+    const userB = await seedUser(testDb.collections.usersCollection, { mock: 1 });
+    const schedule = await seedSchedule();
+    const scheduleId = schedule._id as ObjectId;
+
+    const barrier = new AsyncBarrier(2, 8000);
+    const { proxy } = interceptCollectionCall(
+      testDb.collections.schedulesCollection,
+      "updateOne",
+      (...args: unknown[]) => {
+        const [filter, , options] = args as [{ _id?: ObjectId; "timeSlots.slotId"?: string }, unknown, { session?: unknown } | undefined];
+        return Boolean(options?.session) && Boolean(filter?._id) && filter._id!.equals(scheduleId) && filter["timeSlots.slotId"] === "1";
+      },
+      async (proceed, ...args) => {
+        await barrier.wait();
+        return proceed(...args);
+      }
+    );
+
+    const app = candidateApp({ schedulesCollection: proxy as Collection<Document> });
+
+    const bodyFor = (actor: { _id: unknown }) => ({
+      userId: (actor._id as ObjectId).toString(),
+      location: "Test Center",
+      scheduleId: scheduleId.toString(),
+      slotId: "1",
+      testType: "IELTS",
+      testSystem: "Academic",
+      name: "IELTS Course",
+    });
+
+    const [resA, resB] = await Promise.all([
+      request(app).post("/api/v1/user/book-slot").set("Authorization", `Bearer ${signTestToken(userA._id as ObjectId)}`).send(bodyFor(userA)),
+      request(app).post("/api/v1/user/book-slot").set("Authorization", `Bearer ${signTestToken(userB._id as ObjectId)}`).send(bodyFor(userB)),
+    ]);
+
+    const statuses = [resA.status, resB.status];
+    assert.equal(statuses.filter((s) => s === 200).length, 1, `expected exactly one winner, got statuses ${JSON.stringify(statuses)}`);
+    assert.equal(await testDb.collections.bookingMockCollection.countDocuments({}), 1, "expected exactly one committed booking");
+    const updatedSchedule = await testDb.collections.schedulesCollection.findOne({ _id: scheduleId });
+    assert.equal((updatedSchedule?.timeSlots as Array<{ slot: number }>)[0].slot, 0, "seat must be exactly 0");
+    const [freshA, freshB] = await Promise.all([
+      testDb.collections.usersCollection.findOne({ _id: userA._id as ObjectId }),
+      testDb.collections.usersCollection.findOne({ _id: userB._id as ObjectId }),
+    ]);
+    assert.deepEqual([freshA?.mock, freshB?.mock].sort(), [0, 1], "exactly one user must be charged");
+    assert.ok(statuses.find((s) => s !== 200) !== undefined, "loser HTTP status observed");
+  });
+
+  it("concurrency (candidate): double cancellation restores credit/seat exactly once", async () => {
+    const actor = await seedUser(testDb.collections.usersCollection, { mock: 0 });
+    const actorId = actor._id as ObjectId;
+    const schedule = await seedSchedule({ timeSlots: [{ slotId: "1", slot: 0, startTime: "09:00:00", endTime: "10:00:00" }] });
+    const booking = await seedBooking({
+      userId: actorId.toString(),
+      scheduleId: (schedule._id as ObjectId).toString(),
+      slotId: "1",
+      location: "Test Center",
+    });
+    const bookingId = booking._id as ObjectId;
+
+    const barrier = new AsyncBarrier(2, 8000);
+    const { proxy } = interceptCollectionCall(
+      testDb.collections.bookingMockCollection,
+      "findOne",
+      (...args: unknown[]) => {
+        const [filter, options] = args as [{ _id?: ObjectId }, { session?: unknown } | undefined];
+        return Boolean(options?.session) && Boolean(filter?._id) && filter._id!.equals(bookingId);
+      },
+      async (proceed, ...args) => {
+        const result = await proceed(...args);
+        if (result) await barrier.wait();
+        return result;
+      }
+    );
+
+    const app = candidateApp({ bookingMockCollection: proxy as Collection<Document> });
+    const token = signTestToken(actorId);
+
+    const [resA, resB] = await Promise.all([
+      request(app).delete(`/api/v1/bookings/${bookingId.toString()}`).set("Authorization", `Bearer ${token}`),
+      request(app).delete(`/api/v1/bookings/${bookingId.toString()}`).set("Authorization", `Bearer ${token}`),
+    ]);
+
+    const statuses = [resA.status, resB.status];
+    assert.equal(statuses.filter((s) => s === 200).length, 1, `expected exactly one successful cancellation, got statuses ${JSON.stringify(statuses)}`);
+    assert.equal(await testDb.collections.bookingMockCollection.countDocuments({}), 0);
+    const updatedUser = await testDb.collections.usersCollection.findOne({ _id: actorId });
+    assert.equal(updatedUser?.mock, 1, "mock must be restored exactly once, never +2");
+    const updatedSchedule = await testDb.collections.schedulesCollection.findOne({ _id: schedule._id as ObjectId });
+    assert.equal((updatedSchedule?.timeSlots as Array<{ slot: number }>)[0].slot, 1, "seat must be restored exactly once, never +2");
+    assert.ok(statuses.find((s) => s !== 200) !== undefined, "double-cancel loser HTTP status observed");
+  });
+});

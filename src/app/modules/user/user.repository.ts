@@ -8,11 +8,6 @@ import type {
   UserSummarySourceRecord,
 } from "./user.types";
 
-// The only file in this module touching usersCollection directly. Callers
-// (service) must have already validated userId is a well-formed ObjectId
-// string -- route-level validation/authorization runs before these are ever
-// called (AGENTS.md layer rules: repositories don't decide authorization
-// policy, and don't re-validate what the route chain already guaranteed).
 export class UserRepository {
   constructor(private readonly usersCollection: Collection<Document>) {}
 

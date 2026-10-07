@@ -33,6 +33,20 @@ const LEGACY_PATH_MARKERS: Array<string | RegExp> = [
 // only allowed match.
 const DOCUMENTED_REQUIRE_EXCEPTIONS: string[] = [];
 
+// Stage 12.5: src/app/runtime/bootstrap.ts imports the TYPESCRIPT
+// composition root (`import { createApp } from "../../app"` == src/app.ts),
+// not the legacy backend-root app.js. The LEGACY_PATH_MARKERS above cannot
+// tell those two apart by path text alone (both are a module literally
+// named `app`), so this exact import line is allowlisted here. Any OTHER
+// legacy-marker match in this file (routes/middleware/jobs/index, or a
+// deeper ../../../app climb reaching the real legacy app.js) still fails.
+const DOCUMENTED_TS_APP_ROOT_IMPORTS: Array<{ file: string; line: RegExp }> = [
+  {
+    file: path.join("app", "runtime", "bootstrap.ts"),
+    line: /^\s*import\s*\{[^}]*\}\s*from\s*["']\.\.\/\.\.\/app["'];?\s*$/,
+  },
+];
+
 function listTsFiles(dir: string): string[] {
   const entries = fs.readdirSync(dir, { withFileTypes: true });
   const files: string[] = [];
@@ -75,11 +89,17 @@ describe("legacy compatibility boundary (architecture)", () => {
   it("no file outside src/app/compat/ references legacy routes/middleware/jobs/app.js/index.js, via require() or static import", () => {
     const violations: string[] = [];
     for (const file of outsideCompat) {
+      const relative = path.relative(SRC_DIR, file);
       const content = stripComments(fs.readFileSync(file, "utf8"));
       for (const line of content.split("\n")) {
         const isImportOrRequire = /\brequire\(/.test(line) || /\bimport\b.*\bfrom\b/.test(line) || /\bcreateRequire\(/.test(line);
         if (isImportOrRequire && referencesLegacyModule(line)) {
-          violations.push(`${path.relative(SRC_DIR, file)}: ${line.trim()}`);
+          const allowlisted = DOCUMENTED_TS_APP_ROOT_IMPORTS.some(
+            (entry) => relative === entry.file && entry.line.test(line)
+          );
+          if (!allowlisted) {
+            violations.push(`${relative}: ${line.trim()}`);
+          }
         }
       }
     }

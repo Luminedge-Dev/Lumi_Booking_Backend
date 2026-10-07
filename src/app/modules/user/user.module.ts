@@ -16,9 +16,6 @@ export interface UserModule {
   service: UserService;
 }
 
-// Reuses Stage 7's native Auth middleware directly -- never imports
-// middleware/auth.js (AGENTS.md ss4a rule 4: legacy references stay
-// centralized in compat/, and this module has no legacy dependency at all).
 export function createUserModule(dependencies: UserModuleDependencies): UserModule {
   const repository = new UserRepository(dependencies.usersCollection);
   const service = new UserService(repository);

@@ -6,10 +6,6 @@ import type { AuthActor } from "./user.types";
 import { isValidUserIdParam, parseRequestProfileEditBody } from "./user.validation";
 import * as authz from "./user.authorization";
 
-// Thin Express adapter around a pure user.authorization.ts predicate --
-// writes the exact 403 {message:"Forbidden"} directly (never delegates to
-// the controller: authorization runs BEFORE the controller in the chain, so
-// the controller's own try/catch can never see a rejection here).
 function requireAuthorized(
   predicate: (actor: AuthActor, targetUserId: string) => boolean,
   getTargetUserId: (req: Request) => string | undefined
@@ -42,15 +38,7 @@ const validateProfileEditBody: RequestHandler = (req, res, next) => {
   next();
 };
 
-// Mandatory route-collision guard (Stage 8 plan ss5): must run FIRST, before
-// verifyToken/validation/authorization. Every legacy route this could
-// collide with ("/admin/users", "/user/all") already requires at least
-// verifyToken-level auth itself, so running native verifyToken first would
-// happen to converge on the same result for an unauthenticated request --
-// but putting this check first avoids relying on that coincidence, and
-// critically, validation/authorization reached before this check could
-// incorrectly terminate "/user/all" with their own 400/403 instead of ever
-// falling through.
+// Collision guard: must run FIRST so non-ObjectId ids fall through instead of 400/403 here.
 const passThroughNonObjectId: RequestHandler = (req, res, next) => {
   if (!ObjectId.isValid(req.params.userId)) {
     next("route");
@@ -86,15 +74,10 @@ export function createUserRouter(controller: UserController, authMiddleware: Aut
     controller.requestProfileEdit
   );
 
-  // Admin-only list, no target user at all -- verifyAdmin ALONE (it already
-  // calls verifyToken internally; chaining both would authenticate and
-  // reload account state twice). No user.authorization.ts predicate applies
-  // here, by design (Stage 8 plan ss2/ss6).
+  // verifyAdmin already calls verifyToken internally; chaining both would authenticate twice.
   router.get("/users/with-profile-request", authMiddleware.verifyAdmin, controller.listProfileEditRequests);
 
-  // Must be last -- mirrors routes/user.routes.js's own explicit ordering
-  // comment ("Must be last — catches /user/:userId after all specific
-  // /user/* routes").
+  // Must be last: catches /user/:userId only after specific /user/* routes.
   router.get(
     "/user/:userId",
     passThroughNonObjectId,

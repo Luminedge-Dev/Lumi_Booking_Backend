@@ -1,12 +1,6 @@
 import { config as loadDotenv } from "dotenv";
 
-// Importing this module must be completely inert: no filesystem reads, no
-// dotenv.config() call, no environment mutation, no validation, no exception.
-// All of that is deferred to getConfig(), called lazily by src/server.ts — this
-// is a new, independent validation layer for the new runtime path only. It does
-// not replace or need to byte-match index.js's validateEnv() wording: index.js
-// keeps running unchanged on its own codepath, and nothing currently calls the
-// new lifecycle in production.
+// Importing this module is inert: all reads/validation happen lazily in getConfig().
 export interface AppConfig {
   mongodbUri: string;
   port: number;
@@ -15,11 +9,6 @@ export interface AppConfig {
   skipIndexEnsureOnBoot: boolean;
   slowRequestThresholdMs: number;
   slowDbOperationThresholdMs: number;
-  // Stage 7 (Auth migration): these mirror exactly what routes/auth.routes.js
-  // and middleware/auth.js already read from process.env directly — adding
-  // them here does not change any default or requirement, it only gives the
-  // native Auth module a single configuration owner to receive them from
-  // (AGENTS.md ss4a rule 5) instead of reading process.env itself.
   jwtSecret: string;
   jwtResetPasswordSecret: string;
   jwtExpiresIn: string;
@@ -30,9 +19,7 @@ export interface AppConfig {
 
 let cached: AppConfig | undefined;
 
-// Number(x) || default would silently accept a negative value (e.g. -500)
-// since a negative number is truthy -- fine for nothing else in this file,
-// but not acceptable for a millisecond threshold.
+// Negative values are truthy, so Number(x) || default cannot guard millisecond thresholds.
 function parsePositiveNumber(value: string | undefined, fallback: number): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -59,13 +46,8 @@ export function getConfig(): AppConfig {
     slowDbOperationThresholdMs: parsePositiveNumber(process.env.SLOW_DB_OPERATION_THRESHOLD_MS, 250),
     jwtSecret: process.env.JWT_SECRET as string,
     jwtResetPasswordSecret: process.env.JWT_RESET_PASS_SECRET as string,
-    // Matches routes/auth.routes.js's `process.env.EXPIRES_IN || "7d"` exactly.
     jwtExpiresIn: process.env.EXPIRES_IN || "7d",
-    // Matches routes/auth.routes.js's
-    // `process.env.JWT_RESET_PASS_TOKEN_EXPIRES_IN || "15m"` exactly.
     jwtResetPasswordTokenExpiresIn: process.env.JWT_RESET_PASS_TOKEN_EXPIRES_IN || "15m",
-    // Legacy never validates this (used unguarded in a template string) --
-    // kept optional here for the same reason, not newly required.
     resetPasswordLink: process.env.RESET_PASS_LINK,
     isProduction: process.env.NODE_ENV === "production",
   };

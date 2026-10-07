@@ -1,12 +1,8 @@
 import type { Request, Response } from "express";
+import { logger } from "../../shared/logger/logger";
 import type { UserService } from "./user.service";
 import { parseRequestProfileEditBody } from "./user.validation";
 
-// req/res boundary only -- no Mongo, no authorization logic (already applied
-// by the route middleware chain before any of these run). Every branch here
-// is a direct, final response write; no custom exception class is needed
-// since none of these methods have a deep, multi-layer failure path (unlike
-// Auth's register/login, which genuinely needed AuthHttpError).
 export class UserController {
   constructor(private readonly userService: UserService) {}
 
@@ -15,7 +11,7 @@ export class UserController {
       const result = await this.userService.getUserStatus(req.params.userId);
       res.json(result);
     } catch (err) {
-      console.error("Error fetching user status:", err);
+      logger.error("user_status_error", { error: (err as Error)?.message });
       res.status(500).json({ message: "Failed to load user status." });
     }
   };
@@ -29,7 +25,7 @@ export class UserController {
       }
       res.json({ success: true, user: profile });
     } catch (err) {
-      console.error("Error fetching profile:", err);
+      logger.error("user_profile_error", { error: (err as Error)?.message });
       res.status(500).json({ success: false, message: "Server error" });
     }
   };
@@ -43,16 +39,13 @@ export class UserController {
       }
       res.json(summary);
     } catch (err) {
-      console.error("Error fetching user mock data:", err);
+      logger.error("user_summary_error", { error: (err as Error)?.message });
       res.status(500).json({ success: false, message: "Server error" });
     }
   };
 
   requestProfileEdit = async (req: Request, res: Response): Promise<void> => {
     try {
-      // Re-parses rather than trusting a stashed req property -- the
-      // validation middleware already guaranteed this succeeds by the time
-      // this runs (user.route.ts), and re-parsing is cheap/pure.
       const parsed = parseRequestProfileEditBody(req.body);
       if (!parsed) {
         res.status(400).json({ success: false, message: "Invalid or missing userId" });
@@ -65,7 +58,7 @@ export class UserController {
       }
       res.status(404).json({ success: false, message: "User not found or already requested" });
     } catch (err) {
-      console.error("Error requesting profile edit:", err);
+      logger.error("user_profile_edit_request_error", { error: (err as Error)?.message });
       res.status(500).json({ success: false, message: "Internal server error" });
     }
   };
@@ -75,7 +68,7 @@ export class UserController {
       const users = await this.userService.listProfileEditRequests();
       res.status(200).json({ success: true, users });
     } catch (err) {
-      console.error("Error fetching requested users:", err);
+      logger.error("user_profile_edit_list_error", { error: (err as Error)?.message });
       res.status(500).json({ success: false, message: "Server error" });
     }
   };

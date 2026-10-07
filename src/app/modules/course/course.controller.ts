@@ -1,7 +1,7 @@
 import type { Request, Response } from "express";
+import { logger } from "../../shared/logger/logger";
 import type { CourseService } from "./course.service";
 
-// req/res boundary only -- no Mongo, no business logic (AGENTS.md layer rules).
 export class CourseController {
   constructor(private readonly courseService: CourseService) {}
 
@@ -10,7 +10,7 @@ export class CourseController {
       const courses = await this.courseService.listCourses();
       res.json({ courses });
     } catch (err) {
-      console.error("Error fetching courses:", err);
+      logger.error("course_list_error", { error: (err as Error)?.message });
       res.status(500).json({ message: "Failed to load courses." });
     }
   };

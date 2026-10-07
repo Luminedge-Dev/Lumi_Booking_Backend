@@ -2,10 +2,6 @@ import type { UserRepository } from "./user.repository";
 import { toProfileDto, toProfileEditRequestDto, toUserStatusResponse, toUserSummaryDto } from "./user.mapper";
 import type { ProfileEditRequestRecord, UserProfileDto, UserStatusRecord, UserSummaryDto } from "./user.types";
 
-// Authorized-workflow orchestration only -- authorization has already run in
-// the route middleware chain by the time any of these methods execute (see
-// user.authorization.ts); this service never re-checks actor-vs-target
-// itself, to avoid duplicating that logic in two layers. No Express req/res.
 export class UserService {
   constructor(private readonly repository: UserRepository) {}
 

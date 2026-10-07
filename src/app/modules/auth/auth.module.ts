@@ -19,12 +19,6 @@ export interface AuthModule {
   service: AuthService;
 }
 
-// Composition root for the Auth module -- the first module built under
-// AGENTS.md ss4a's module-first rules. Wires
-// repository -> service -> controller/middleware -> router. Exposes
-// `middleware` separately from `router` so future migrated modules can
-// depend on the same verifyToken/verifyAdmin/verifyStaff without importing
-// anything from inside this module's route wiring.
 export function createAuthModule(dependencies: AuthModuleDependencies): AuthModule {
   const { usersCollection, config, emailSender } = dependencies;
 

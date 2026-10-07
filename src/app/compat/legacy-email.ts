@@ -1,9 +1,3 @@
-// The only file allowed to reference emailSender.js / @vercel/functions'
-// waitUntil for the native Auth module (AGENTS.md's compat-boundary rule --
-// legacy dependencies are centralized, not scattered). Mirrors
-// routes/auth.routes.js's welcome/reset-password email templates and
-// fire-and-forget semantics exactly: HTTP success never waits on email, and
-// callers here never await these methods either.
 import { waitUntil } from "@vercel/functions";
 import sanitizeHtml from "sanitize-html";
 import { emailSender } from "../../../emailSender";
@@ -32,10 +26,6 @@ export const legacyEmailSender: AuthEmailSender = {
       </div>
     `;
 
-    // Fire-and-forget (see auth.routes.js's identical comment): SMTP trouble
-    // must never delay the response, which has already succeeded by the
-    // time this is called. waitUntil keeps the serverless invocation alive
-    // until this settles.
     waitUntil(
       emailSender(subject, email, messageContent)
         .then((result: { success: boolean; error?: { message?: string } | unknown }) => {
@@ -68,12 +58,6 @@ export const legacyEmailSender: AuthEmailSender = {
     waitUntil(
       emailSender(subject, email, content).then((emailResult: { success: boolean; error?: unknown }) => {
         if (!emailResult?.success) {
-          // Distinct error logging here would only ever fire for existing
-          // accounts and thus reintroduce the enumeration leak the caller's
-          // generic HTTP response is hardened against -- see
-          // auth.service.ts#prepareForgotPassword / the controller that
-          // calls this. The HTTP response itself is already sent
-          // identically either way.
           console.error(`Password reset email failed for ${email}:`, emailResult?.error);
         }
       })

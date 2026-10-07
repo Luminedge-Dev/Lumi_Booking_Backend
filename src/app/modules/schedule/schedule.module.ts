@@ -16,10 +16,6 @@ export interface ScheduleModule {
   service: ScheduleService;
 }
 
-// Composition root for the Schedule module. Reuses Stage 7's native Auth
-// middleware directly (verifyToken/verifyAdmin/verifyStaff) -- no
-// schedule.authorization.ts exists, since this module has no per-resource
-// ownership policy (plain role guards are the entire authorization story).
 export function createScheduleModule(dependencies: ScheduleModuleDependencies): ScheduleModule {
   const repository = new ScheduleRepository(dependencies.schedulesCollection);
   const service = new ScheduleService(repository);

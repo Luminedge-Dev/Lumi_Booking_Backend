@@ -1,28 +1,12 @@
 import type { NextFunction, Request, RequestHandler, Response } from "express";
 import jwt from "jsonwebtoken";
+import { logger } from "../../shared/logger/logger";
 import type { AuthService } from "./auth.service";
 import type { AuthActor } from "./auth.types";
 
-// Required module file (not optional): this middleware is consumed by this
-// module's own five routes now, and will be consumed by other modules once
-// they migrate -- it does not belong inside auth.controller.ts, which only
-// handles the five HTTP endpoints.
-//
-// Every response here is written directly (res.status(...).json(...)),
-// never via next(AppError) / the shared errorHandler: that handler only ever
-// serializes {message} from an AppError and silently drops errorCode, but
-// every locked legacy 401 body here is {message, code}. Modifying the shared
-// error-handler contract to special-case Auth was explicitly rejected in
-// favor of keeping domain response shapes inside the owning module.
-declare global {
-  // eslint-disable-next-line @typescript-eslint/no-namespace
-  namespace Express {
-    interface Request {
-      user?: AuthActor;
-    }
-  }
-}
-
+// Every 401 body here is written directly: the shared errorHandler drops
+// errorCode, but every locked 401 body here is {message, code}.
+// (Request.user typing lives in shared/types/express.d.ts.)
 function extractToken(req: Request): string | null {
   const authHeader = req.headers.authorization;
   const cookieToken = (req.cookies as Record<string, string> | undefined)?.token;
@@ -61,7 +45,7 @@ export function createAuthMiddleware(authService: AuthService, jwtSecret: string
       req.user = state.role ? { ...decoded, role: state.role } : decoded;
       next();
     } catch (err) {
-      console.error("Auth account-state check failed:", (err as Error)?.message);
+      logger.error("auth_account_state_error", { error: (err as Error)?.message });
       res.status(500).json({ message: "Authentication error" });
     }
   };

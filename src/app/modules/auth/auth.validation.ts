@@ -8,13 +8,7 @@ import type {
   ResetPasswordInput,
 } from "./auth.types";
 
-// Thin, Auth-owned validation adapter (per the plan's ss7) -- NOT the shared
-// src/app/middleware/validate-request.ts, which always emits a fixed
-// {message:"Invalid request", code:"VALIDATION_ERROR"} shape on failure.
-// That shape matches none of the exact legacy Auth messages below, so using
-// it here would be an API-compatibility regression. Zod still does the real
-// type/presence checking; a failed parse is mapped to the single legacy
-// message those checks already produced.
+// Not the shared validator: its fixed shape matches none of the legacy Auth messages below.
 const emailPasswordSchema = z.object({
   email: z.string().min(1),
   password: z.string().min(1),
@@ -28,10 +22,6 @@ export function parseLoginBody(body: unknown): LoginInput {
   return result.data;
 }
 
-// passthrough(): registration's non-auth profile fields (name, contactNo,
-// etc.) stay compatibility-permissive -- only email/password are
-// Auth-relevant and get strict validation (AGENTS.md: don't impose new
-// profile rules that belong to the future Stage 8 User migration).
 const registerSchema = z
   .object({
     email: z.string().min(1),
@@ -49,9 +39,7 @@ export function parseRegisterBody(body: unknown): RegisterInput {
   }
 
   const raw = (body ?? {}) as Record<string, unknown>;
-  // SECURITY: role/status/isDeleted/mock/totalMock are never read from the
-  // request body here, matching auth.routes.js's own explicit comment --
-  // those are server-owned (set in auth.service.ts#register).
+  // SECURITY: role/status/isDeleted/mock/totalMock are server-owned, never read from the body.
   return {
     email: result.data.email,
     password: result.data.password,
@@ -75,11 +63,7 @@ export function parseForgotPasswordBody(body: unknown): ForgotPasswordInput {
   return result.data;
 }
 
-// NOT a zod schema: legacy reset-password only checks truthiness for
-// userId/token (no typeof constraint on either -- auth.routes.js:236), and a
-// strict typeof==="string" check for newPassword only. A zod z.string()
-// would reject a non-string userId/token differently than legacy's plain
-// truthy check, narrowing accepted input beyond what currently works.
+// Legacy checks truthiness only for userId/token; a zod string check would narrow accepted input.
 export function parseResetPasswordBody(body: unknown): ResetPasswordInput {
   const raw = (body ?? {}) as Record<string, unknown>;
   const { userId, token, newPassword } = raw;

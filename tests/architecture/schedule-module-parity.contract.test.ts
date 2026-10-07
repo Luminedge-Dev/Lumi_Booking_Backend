@@ -2,15 +2,15 @@
 // mounted by src/app.ts) matches the legacy contract locked in
 // tests/characterization/schedule.contract.test.ts for all 4 migrated
 // routes, proves the new monthly route's full contract, proves the
-// mandatory route-order guard, and proves GET /schedule/:userId still
-// reaches the legacy handler unmodified (deliberately not migrated).
+// mandatory route-order guard, and proves GET /schedule/:userId is now
+// served NATIVELY with self-or-staff authorization (Stage 12.5 MIGRATE +
+// SECURE -- the old legacy-fallthrough parity gate is retired; the legacy
+// handler for this path is shadowed dead code kept for rollback safety).
 //
-// Like Stage 8's user-module-parity file, this one deliberately exercises
-// FALLTHROUGH to the still-mounted legacy scheduleRoutes() router
-// (/schedule/:userId), which is guarded by middleware/auth.js's verifyToken
-// -- that reads process.env.JWT_SECRET directly, independent of the native
-// module's fakeAuthConfig(). Both must agree or legacy's verifyToken fails
-// signature verification against a token signed for the native module.
+// Like Stage 8's user-module-parity file, native-auth tests sign tokens
+// against fakeAuthConfig() below. process.env.JWT_SECRET is ALSO set
+// because the still-mounted legacy routers' middleware/auth.js verifyToken
+// reads it directly -- both must agree.
 //
 // src/app/modules/schedule/schedule.route.ts calls Router() fresh inside
 // createScheduleRouter() every time, so no require-cache-busting is needed
@@ -452,11 +452,19 @@ describe("native Schedule module: new GET /api/v1/schedule/course/:courseId?mont
   });
 });
 
-describe("GET /api/v1/schedule/:userId (parity gate -- deliberately NOT migrated)", () => {
-  it("still reaches the legacy handler unmodified through the full native app.ts", async () => {
+describe("GET /api/v1/schedule/:userId (Stage 12.5 MIGRATED + SECURED -- legacy parity gate retired)", () => {
+  it("cross-user read is now forbidden natively (was 200 [] through legacy)", async () => {
     const user = makeUser("user");
     const app = appWith(new FakeUsersCollection([user]), new FakeSchedulesCollection());
     const res = await request(app).get(`/api/v1/schedule/${new ObjectId().toString()}`).set("Authorization", `Bearer ${signToken(user._id)}`);
+    assert.equal(res.status, 403);
+    assert.deepEqual(res.body, { message: "Forbidden" });
+  });
+
+  it("self read keeps the legacy empty shape", async () => {
+    const user = makeUser("user");
+    const app = appWith(new FakeUsersCollection([user]), new FakeSchedulesCollection());
+    const res = await request(app).get(`/api/v1/schedule/${user._id.toString()}`).set("Authorization", `Bearer ${signToken(user._id)}`);
     assert.equal(res.status, 200);
     assert.deepEqual(res.body, { schedules: [] });
   });

@@ -4,12 +4,6 @@ import { measureDatabaseOperation } from "../../database/query-timing";
 import { ScheduleQueryTimeoutError } from "./schedule.types";
 import type { AdminListFilter, AdminListParams, MonthRange, ScheduleRecord, SlotIdKey } from "./schedule.types";
 
-// The only file in this module touching schedulesCollection directly.
-// findByDateAndCourse and findMaxSlotId reproduce routes/schedule.routes.js's
-// exact aggregation pipelines verbatim (int-or-string-tolerant slotId
-// coercion, identical $match/$sort/$project stages) -- not a rewrite using
-// a "cleaner" approach, since the sort/coercion semantics are an observable
-// contract (numeric slotId ordering) that must match legacy exactly.
 export class ScheduleRepository {
   constructor(private readonly schedulesCollection: Collection<Document>) {}
 
@@ -94,8 +88,6 @@ export class ScheduleRepository {
     });
   }
 
-  // New Stage 9 contract -- filters on STRING startDate boundaries (never
-  // BSON Date; see schedule.validation.ts's parseMonthParam).
   async findByCourseAndMonth(courseId: string, range: MonthRange): Promise<ScheduleRecord[]> {
     return measureDatabaseOperation({ collection: "schedules", operation: "schedule.find_by_course_month" }, async () => {
       const docs = await this.schedulesCollection
@@ -109,10 +101,7 @@ export class ScheduleRepository {
     });
   }
 
-  // Timeout mapping stays HTTP-independent here: a Mongo code-50 failure is
-  // translated into a typed domain error, never into a status code --
-  // schedule.controller.ts is the only place that knows this means 504 for
-  // the admin-list endpoint specifically.
+  // Maps Mongo code-50 to ScheduleQueryTimeoutError; the controller owns the 504 mapping.
   async listAdmin(filter: AdminListFilter, params: AdminListParams): Promise<ScheduleRecord[]> {
     return measureDatabaseOperation({ collection: "schedules", operation: "schedule.list_admin" }, async () => {
       try {
@@ -150,6 +139,14 @@ export class ScheduleRepository {
     return measureDatabaseOperation({ collection: "schedules", operation: "schedule.delete" }, async () => {
       const result = await this.schedulesCollection.deleteOne({ _id: new ObjectId(id) } as Document);
       return result.deletedCount > 0;
+    });
+  }
+
+  // Raw-string userId match with no ObjectId coercion, matching legacy.
+  async findByUserId(userId: string): Promise<ScheduleRecord[]> {
+    return measureDatabaseOperation({ collection: "schedules", operation: "schedule.find_by_user" }, async () => {
+      const docs = await this.schedulesCollection.find({ userId } as Document).toArray();
+      return docs as unknown as ScheduleRecord[];
     });
   }
 }

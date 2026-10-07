@@ -1,8 +1,5 @@
 import { StatusCodes } from "http-status-codes";
 
-// Small, framework-agnostic application error used by the TypeScript
-// error-handling foundation. Migrated modules may adopt it incrementally;
-// legacy app.js and legacy routes remain unchanged.
 export class AppError extends Error {
   readonly statusCode: number;
   readonly errorCode?: string;
@@ -20,8 +17,6 @@ export class AppError extends Error {
     this.errorCode = errorCode;
     this.isOperational = isOperational;
 
-    // Restores the prototype chain under the ES2015 class-extends-Error
-    // transpilation gap (safe/no-op on targets where it isn't needed).
     Object.setPrototypeOf(this, AppError.prototype);
   }
 

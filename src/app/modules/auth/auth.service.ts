@@ -14,11 +14,8 @@ import type {
   ResetPasswordInput,
 } from "./auth.types";
 
-// Thrown by service methods for every locked legacy status/body pair.
-// auth.controller.ts catches this and writes res.status(status).json(body)
-// verbatim -- never routed through the shared AppError/errorHandler path
-// (that serializer drops non-"message" fields; several legacy Auth bodies
-// use other shapes like {success, message}).
+// Thrown for every locked legacy status/body pair; the controller writes
+// res.status(status).json(body) verbatim, never via the shared errorHandler.
 export class AuthHttpError extends Error {
   constructor(
     public readonly status: number,
@@ -36,11 +33,6 @@ export interface ForgotPasswordDispatch {
   resetLink?: string;
 }
 
-// Business orchestration only -- no Express req/res (AGENTS.md layer rules).
-// Password hashing, JWT creation/verification, and account-state evaluation
-// all live here; HTTP status/body mapping and email-dispatch *timing*
-// (fire-and-forget ordering relative to the HTTP response) are the
-// controller's job, since that ordering is an HTTP-boundary concern.
 export class AuthService {
   constructor(
     private readonly repository: AuthRepository,
@@ -86,9 +78,7 @@ export class AuthService {
     try {
       await this.repository.insertUser(newUser);
     } catch (error) {
-      // The existence checks above are not atomic -- two concurrent
-      // registrations with the same email can both pass them. The unique
-      // {email} index is the real guard: a duplicate insert throws E11000.
+      // The checks above are not atomic; the unique {email} index is the real guard.
       if ((error as { code?: number })?.code === 11000) {
         throw new AuthHttpError(409, { message: "User already exists" });
       }
@@ -123,10 +113,6 @@ export class AuthService {
     };
   }
 
-  // DB lookup + reset-link construction only -- no email send here. The
-  // controller sends the generic HTTP response first, then fires the email
-  // separately, matching auth.routes.js:207-225's exact ordering
-  // (res.json(...) before waitUntil(...)).
   async prepareForgotPassword(input: ForgotPasswordInput): Promise<ForgotPasswordDispatch> {
     const userData = await this.repository.findByEmail(input.email.toLowerCase());
     if (!userData) {
@@ -194,13 +180,7 @@ export class AuthService {
   }
 
   async changePassword(actorEmail: string | undefined, input: ChangePasswordInput): Promise<void> {
-    // Intentional non-null assertion, NOT a defensive guard: legacy
-    // auth.routes.js:297 calls req.user.email.toLowerCase() with no
-    // existence check, inside the route's outer try/catch. A validly-signed
-    // JWT missing the email claim throws a TypeError there, caught by that
-    // catch block, producing the generic 500 "Server error". This mirrors
-    // that exact behavior rather than adding new upstream validation --
-    // see the plan's dedicated characterization test for this edge case.
+    // Mirrors legacy: a JWT missing the email claim throws, caught as generic 500 "Server error".
     if (input.email.toLowerCase() !== actorEmail!.toLowerCase()) {
       throw new AuthHttpError(403, { message: "Forbidden" });
     }
@@ -226,13 +206,7 @@ export class AuthService {
     });
   }
 
-  // Mirrors middleware/auth.js's checkAccountState() exactly, including its
-  // skip-path: a missing/invalid userId returns {ok:true} WITHOUT querying
-  // the database at all (not an error -- see auth.types.ts's AuthActor
-  // comment). Legacy also short-circuits to {ok:true} when its module-level
-  // usersCollection was never initialized via initAuth(); that branch models
-  // an optional-wiring footgun specific to the legacy singleton pattern and
-  // has no equivalent here, since this module always constructs a repository.
+  // A missing/invalid userId skips the DB lookup and returns {ok:true}.
   async checkAccountState(decoded: { userId?: string | ObjectId; iat?: number }): Promise<AuthAccountState> {
     const userId = decoded?.userId;
     if (!userId || !ObjectId.isValid(String(userId))) {

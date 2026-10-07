@@ -4,10 +4,7 @@ import { AppError } from "../shared/errors/app-error";
 import { CORS_REJECTION_MESSAGE } from "./cors";
 import { logger } from "../shared/logger/logger";
 
-// Must keep exactly 4 declared parameters (even though req/next are unused)
-// so Express's arity-based error-middleware detection (fn.length === 4)
-// still recognizes this as an error handler. Do not "simplify" _req/_next
-// away — that would silently stop Express from ever invoking this.
+// 4 params required: Express detects error middleware by fn.length === 4.
 export const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
   if (err instanceof AppError) {
     res.status(err.statusCode).json({ message: err.message });

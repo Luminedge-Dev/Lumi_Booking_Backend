@@ -1,4 +1,5 @@
 import type { NextFunction, Request, Response } from "express";
+import { logger } from "../../shared/logger/logger";
 import { AuthHttpError, type AuthService } from "./auth.service";
 import {
   parseChangePasswordBody,
@@ -9,11 +10,8 @@ import {
 } from "./auth.validation";
 import type { AuthEmailSender } from "./auth.types";
 
-// Express req/res boundary + exact legacy status/body mapping. No direct
-// MongoDB access (AGENTS.md layer rules) -- all business logic lives in
-// AuthService; AuthHttpError thrown by the service/validation layer is
-// mapped verbatim to res.status(status).json(body) here, never through the
-// shared AppError/errorHandler path (see auth.middleware.ts's comment on why).
+// AuthHttpError is mapped verbatim to res.status(status).json(body) here,
+// never through the shared AppError/errorHandler path.
 export class AuthController {
   constructor(
     private readonly authService: AuthService,
@@ -26,16 +24,13 @@ export class AuthController {
       const input = parseRegisterBody(req.body);
       const result = await this.authService.register(input);
       res.status(201).json({ message: "User registered successfully", userId: result.userId });
-      // Fire-and-forget, after the response -- matches
-      // auth.routes.js:92's ordering (res.status(201).json(...) before
-      // waitUntil(...)).
       this.emailSender.sendWelcomeEmail(result.normalizedEmail, result.name);
     } catch (error) {
       if (error instanceof AuthHttpError) {
         res.status(error.status).json(error.body);
         return;
       }
-      console.error("Error during registration process:", error);
+      logger.error("auth_register_error", { error: (error as Error)?.message });
       res.status(500).json({ message: "Internal server error" });
     }
   };
@@ -64,10 +59,7 @@ export class AuthController {
         res.status(error.status).json(error.body);
         return;
       }
-      // Legacy login's catch-all calls next(error) rather than writing a
-      // response directly (auth.routes.js:153-155) -- preserved here so an
-      // unexpected failure still flows through the app's error-handling
-      // middleware instead of a bespoke body.
+      // Unexpected login failures flow through the app's error-handling middleware.
       next(error);
     }
   };
@@ -77,12 +69,9 @@ export class AuthController {
       const input = parseForgotPasswordBody(req.body);
       const dispatch = await this.authService.prepareForgotPassword(input);
 
-      // SECURITY: identical response whether or not the account exists, so
-      // this endpoint can't be used to enumerate registered emails.
+      // SECURITY: identical response whether or not the account exists.
       res.json({ success: true, message: "Password reset link sent successfully" });
 
-      // Fire-and-forget, AFTER the response -- matches
-      // auth.routes.js:207-225's exact ordering.
       if (dispatch.found) {
         this.emailSender.sendPasswordResetEmail(dispatch.email as string, dispatch.name, dispatch.resetLink as string);
       }
@@ -91,7 +80,7 @@ export class AuthController {
         res.status(error.status).json(error.body);
         return;
       }
-      console.error("Error in forget-password route:", error);
+      logger.error("auth_forgot_password_error", { error: (error as Error)?.message });
       res.status(500).json({ success: false, message: "Internal Server Error" });
     }
   };
@@ -106,7 +95,7 @@ export class AuthController {
         res.status(error.status).json(error.body);
         return;
       }
-      console.error("Error in reset-password route:", error);
+      logger.error("auth_reset_password_error", { error: (error as Error)?.message });
       res.status(500).json({ success: false, message: "Internal Server Error" });
     }
   };
@@ -121,7 +110,7 @@ export class AuthController {
         res.status(error.status).json(error.body);
         return;
       }
-      console.error("change-password error:", error);
+      logger.error("auth_change_password_error", { error: (error as Error)?.message });
       res.status(500).json({ message: "Server error" });
     }
   };

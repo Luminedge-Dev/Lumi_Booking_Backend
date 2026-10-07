@@ -1,16 +1,18 @@
 # Luminedge Booking Backend
 
 Production booking backend (Express 4 + native MongoDB + JWT/bcrypt).
-Active runtime is legacy CommonJS `index.js → app.js`. A parallel TypeScript
-candidate lives under `src/` (Auth/User/Course/Schedule migrated; Booking and
-Feedback remain legacy). Production MongoDB remains authoritative.
+Existing production runtime is legacy CommonJS `index.js → app.js`. A parallel
+TypeScript candidate lives under `src/` (Auth/User/Course/Schedule migrated;
+Booking and Feedback remain legacy). Production MongoDB remains authoritative.
 
 ## Current runtime
 
-- `pnpm dev` → `nodemon index.js` (legacy, active)
-- `pnpm start` → `node index.js`
-- TS candidate (`src/server.ts → src/app.ts`) is tested, NOT activated.
-- Vercel entry is still the legacy `index.js` handler.
+- `pnpm dev` → `tsx --watch src/main.ts` (TS candidate, repo default)
+- `pnpm start` → `node --import=tsx src/main.ts` (TS candidate)
+- `pnpm dev:legacy` → `nodemon index.js` (legacy production path)
+- `pnpm start:legacy` → `node index.js` (legacy production path)
+- Serverless candidate: `src/handler.ts` → `runtime/bootstrap.ts` → `src/app.ts` → `router/index.ts`; implemented + locally verified, NOT activated in existing production (intentional under D-035).
+- Vercel entry is still the legacy `index.js` handler in existing production.
 
 ## Architecture
 
@@ -25,8 +27,10 @@ TypeScript; legacy references stay under `src/app/compat/`.
 ```text
 pnpm install --frozen-lockfile
 pnpm typecheck
-pnpm test                    (557/557: characterization + architecture + normalization + units)
-pnpm test:transaction        (14/14 on a real ephemeral MongoDB replica set)
+pnpm test                    (600/600: characterization + architecture + normalization + units)
+pnpm test:characterization   (119/119 legacy contracts)
+pnpm test:architecture       (213/213)
+pnpm test:transaction        (20/20 on a real ephemeral MongoDB replica set)
 ```
 
 Transaction/concurrency suite uses `mongodb-memory-server-core` (dev-only,
@@ -44,7 +48,7 @@ canonical architecture/context documentation lives at:
 ../context/decision-log.md    (D-032 is the current target decision)
 ../context/architecture.md
 ../context/backend-modernization-master-plan.md   (canonical roadmap)
-../resource/PRD.md            (PRD v5.0)
+../resource/PRD.md            (PRD v5.1)
 ```
 
 These parent-level workspace documents are not part of this standalone
