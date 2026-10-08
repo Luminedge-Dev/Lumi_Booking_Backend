@@ -1,8 +1,8 @@
 # AGENTS.md — Luminedge Booking Backend (repo-scoped operating rules)
 
-**Status:** ACTIVE — 2026-10-07
+**Status:** ACTIVE — 2026-10-08
 **Scope:** this repository only (`Lumi_Booking_Backend/`).
-**Stage:** Stage 12.5 — COMPLETE 2026-10-07 (D-034) + Stage 13 — COMPLETE 2026-10-07 (D-036, stage13-dev only) + Stage 14 — NEXT
+**Stage:** Stage 12.5 — COMPLETE 2026-10-07 (D-034) + Stage 13 — COMPLETE 2026-10-07 (D-036, stage13-dev only) + Stage 14 — COMPLETE 2026-10-08 (D-037, read-only Mongo → stage13-dev ETL + reconciliation; `scripts/migration/stage14/`) + Stage 15 — NEXT (not started)
 **Target:** D-032 — PostgreSQL + Prisma ORM 7.10.0 foundation is local. MongoDB remains the authoritative application database.
 **Deployment (D-035 ACTIVE):** existing production (`luminedge-server` + MongoDB) stays live and untouched. Stage 13+ work targets local/new staging infrastructure — NEVER old-production conversion. Do not deploy this backend over the current production project; do not Preview against it.
 
@@ -104,13 +104,25 @@ live in repositories only — never in controllers.
 
 ```text
 pnpm typecheck
-pnpm test                    (612/612)
+pnpm test                    (670/670)
 pnpm test:characterization   (119/119 legacy contracts)
 pnpm test:architecture       (225/225)
 pnpm test:transaction        (20/20, real ephemeral replica set)
-pnpm test:postgres           (1/1, Neon branch stage13-dev only)
+pnpm test:stage14:mongo      (6/6, real ephemeral Mongo; ETL keyset/resume)
+pnpm test:postgres           (2/2, Neon branch stage13-dev only)
 git diff --check
 ```
+
+Stage 14 ETL commands (Mongo is READ ONLY; writes only to a verified stage13-dev):
+
+```text
+pnpm migration:stage14:dry-run     extract + transform + validate, no PostgreSQL write (default)
+pnpm migration:stage14:load         requires --target stage13-dev (already in the script)
+pnpm migration:stage14:reconcile    SELECT-only comparison against stage13-dev
+```
+
+Never point these at Neon production or at existing production; never print
+connection strings; reports under `_migration/` stay local (gitignored).
 
 Never claim tests passed unless they ran. After meaningful work, update the
 workspace `context/progress-tracker.md` (parent checkout, not pushed with this repo).
