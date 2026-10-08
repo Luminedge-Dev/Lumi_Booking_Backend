@@ -10,6 +10,8 @@
 // top level), so no require-cache-busting is needed here (same as Stage 7's
 // native parity pattern).
 import { afterEach, describe, it } from "node:test";
+import { fakeCoreRepositories } from "../helpers/fake-core-repositories";
+import { usersBackedRepositories } from "../helpers/fake-users-repositories";
 import assert from "node:assert/strict";
 import request from "supertest";
 import jwt from "jsonwebtoken";
@@ -58,7 +60,7 @@ function appWith(usersCollection: FakeUsersCollection) {
     bookingMockCollection: throwingCollection("bookingMockCollection") as unknown as Collection<Document>,
     client: {} as MongoClient,
   };
-  return createApp(dependencies, { corsOrigins: ["http://localhost:3000"], trustProxyHops: 1, authConfig: fakeAuthConfig() });
+  return createApp(dependencies, { corsOrigins: ["http://localhost:3000"], trustProxyHops: 1, authConfig: fakeAuthConfig(), repositories: fakeCoreRepositories(usersBackedRepositories(usersCollection)) });
 }
 
 function signToken(userId: ObjectId, role = "user"): string {
@@ -117,20 +119,22 @@ describe("native User module parity: GET /api/v1/user/status/:userId", () => {
     assert.deepEqual(res.body, { message: "Invalid user ID format." });
   });
 
-  it("passthrough: dateofbirth and an unexpected field survive, password never present", async () => {
+  it("EXPECTED INTENTIONAL (Stage 15): modeled columns pass through; unmodeled legacy keys (dateofbirth spelling, unknown fields) are not carried by PostgreSQL; password never present", async () => {
     const self = {
       _id: new ObjectId(),
       email: "self@example.test",
       password: "secret-hash",
       role: "user",
+      dateOfBirth: "1990-01-01",
       dateofbirth: "1990-01-01",
       someUnexpectedLegacyField: "legacy-value",
     };
     const app = appWith(new FakeUsersCollection([self]));
     const res = await request(app).get(`/api/v1/user/status/${self._id}`).set("Authorization", `Bearer ${signToken(self._id)}`);
     assert.equal(res.status, 200);
-    assert.equal(res.body.user.dateofbirth, "1990-01-01");
-    assert.equal(res.body.user.someUnexpectedLegacyField, "legacy-value");
+    assert.equal(res.body.user.dateOfBirth, "1990-01-01");
+    assert.equal(res.body.user.dateofbirth, undefined);
+    assert.equal(res.body.user.someUnexpectedLegacyField, undefined);
     assert.ok(!Object.prototype.hasOwnProperty.call(res.body.user, "password"));
   });
 
@@ -223,7 +227,7 @@ describe("native User module parity: POST /api/v1/user/request-profile-edit", ()
     assert.deepEqual(res.body, { success: false, message: "Invalid or missing userId" });
   });
 
-  it("PARITY (not a new validation): truthy non-string note is accepted and persisted unchanged, exactly like legacy", async () => {
+  it("EXPECTED INTENTIONAL (Stage 15): non-text note is rejected 400 (PostgreSQL column is text); legacy persisted any truthy value", async () => {
     const self = { _id: new ObjectId(), email: "self@example.test", password: "x", role: "user" };
     const collection = new FakeUsersCollection([self]);
     const app = appWith(collection);
@@ -231,10 +235,10 @@ describe("native User module parity: POST /api/v1/user/request-profile-edit", ()
       .post("/api/v1/user/request-profile-edit")
       .set("Authorization", `Bearer ${signToken(self._id)}`)
       .send({ userId: self._id.toString(), note: 123 });
-    assert.equal(res.status, 200);
-    assert.deepEqual(res.body, { success: true, message: "Profile change request submitted" });
+    assert.equal(res.status, 400);
+    assert.deepEqual(res.body, { success: false, message: "Invalid note" });
     const stored = collection.find().find((d) => d._id.equals(self._id));
-    assert.strictEqual(stored?.profileEditNote, 123);
+    assert.strictEqual(stored?.profileEditNote, undefined);
   });
 
   it("PARITY: falsy note (null) maps to empty string, exactly like legacy note || ''", async () => {

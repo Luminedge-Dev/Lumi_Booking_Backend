@@ -6,42 +6,12 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { ObjectId } from "mongodb";
-import { UserRepository } from "../../../src/app/modules/user/user.repository";
+import { FakeUsersCollection } from "../../helpers/fake-users-collection";
+import { FakeUsersUserRepository } from "../../helpers/fake-users-repositories";
 import { UserService } from "../../../src/app/modules/user/user.service";
 
-class FakeCollection {
-  constructor(private docs: Array<Record<string, unknown>> = []) {}
-  async findOne(filter: Record<string, unknown>, options?: { projection?: Record<string, 0 | 1> }) {
-    const doc = this.docs.find((d) =>
-      Object.entries(filter).every(([k, v]) => (v instanceof ObjectId ? (d[k] as ObjectId)?.equals?.(v) : d[k] === v))
-    );
-    if (!doc) return null;
-    if (!options?.projection) return doc;
-    const keys = Object.keys(options.projection);
-    if (keys.some((k) => options.projection![k] === 0)) {
-      const result = { ...doc };
-      for (const k of keys) if (options.projection![k] === 0) delete result[k];
-      return result;
-    }
-    const result: Record<string, unknown> = { _id: doc._id };
-    for (const k of keys) if (options.projection![k] === 1 && k in doc) result[k] = doc[k];
-    return result;
-  }
-  find(filter: Record<string, unknown> = {}) {
-    const matched = this.docs.filter((d) => Object.entries(filter).every(([k, v]) => d[k] === v));
-    return { project: () => ({ toArray: async () => matched }) };
-  }
-  async updateOne(filter: Record<string, unknown>, update: { $set: Record<string, unknown> }) {
-    const doc = this.docs.find((d) => (filter._id as ObjectId)?.equals?.(d._id as ObjectId));
-    if (!doc) return { matchedCount: 0, modifiedCount: 0 };
-    Object.assign(doc, update.$set);
-    return { matchedCount: 1, modifiedCount: 1 };
-  }
-}
-
 function makeService(docs: Array<Record<string, unknown>> = []) {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const repository = new UserRepository(new FakeCollection(docs) as any);
+  const repository = new FakeUsersUserRepository(new FakeUsersCollection(docs as never));
   return new UserService(repository);
 }
 

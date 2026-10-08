@@ -1,30 +1,32 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { ObjectId } from "mongodb";
-import { CourseRepository } from "../../../src/app/modules/course/course.repository";
 import { CourseService } from "../../../src/app/modules/course/course.service";
+import { FakeCourseRepository } from "../../helpers/fake-core-repositories";
 
-class FakeCoursesCollection {
-  constructor(private docs: Array<Record<string, unknown>> = []) {}
-  find() {
-    return { toArray: async () => this.docs };
-  }
-}
+const HEX = "6713f7ab0123456789abcdef";
 
 describe("CourseService.listCourses", () => {
-  it("returns the mapped course list, ObjectId id included", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const repo = new CourseRepository(new FakeCoursesCollection([{ _id: new ObjectId(), name: "IELTS" }]) as any);
-    const service = new CourseService(repo);
+  it("returns the mapped course list, string id included", async () => {
+    const service = new CourseService(
+      new FakeCourseRepository([{ _id: HEX, name: "IELTS", image: "ielts.png", homeBasedSystems: [] }])
+    );
     const courses = await service.listCourses();
     assert.equal(courses.length, 1);
+    assert.equal(courses[0]._id, HEX);
     assert.equal(courses[0].name, "IELTS");
   });
 
-  it("empty collection -> empty array", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const repo = new CourseRepository(new FakeCoursesCollection([]) as any);
-    const service = new CourseService(repo);
+  it("no rows -> empty array", async () => {
+    const service = new CourseService(new FakeCourseRepository([]));
     assert.deepEqual(await service.listCourses(), []);
+  });
+
+  it("a repository failure propagates to the caller (controller owns the 500 mapping)", async () => {
+    const service = new CourseService({
+      findAll: async () => {
+        throw new Error("persistence down");
+      },
+    });
+    await assert.rejects(() => service.listCourses(), /persistence down/);
   });
 });

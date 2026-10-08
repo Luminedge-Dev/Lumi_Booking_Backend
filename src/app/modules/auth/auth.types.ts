@@ -34,13 +34,51 @@ export interface AuthAccountStateFail {
 export type AuthAccountState = AuthAccountStateOk | AuthAccountStateFail;
 
 export interface AuthUserRecord {
-  _id: ObjectId;
+  _id: string;
+  name?: string;
   email: string;
   password: string;
   role: string;
   status?: string;
   isDeleted?: boolean;
   passwordChangedAt?: Date | string;
+  needPasswordChange?: boolean;
+}
+
+// A registration that is already proven storable in PostgreSQL (see
+// parseRegisterBody). The server owns role/status/isDeleted/mock counters.
+export interface NewUserRecord {
+  _id: string;
+  name: string;
+  email: string;
+  contactNo?: string | null;
+  passportNumber?: string | null;
+  sex?: string | null;
+  dateOfBirth?: string | null;
+  password: string;
+  mock: 0;
+  totalMock: 0;
+  result: unknown[] | null;
+  transactionId?: string | null;
+  role: "user";
+  status: "active";
+  isDeleted: false;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+// Thrown by the repository when a user with exactly this email already exists
+// (PostgreSQL has no UNIQUE(email); the repository serializes inserts per
+// email instead). The service maps it to the legacy 409.
+export class UserEmailConflictError extends Error {
+  constructor() {
+    super("User email already exists");
+    this.name = "UserEmailConflictError";
+  }
+}
+
+export interface PasswordUpdateExtra {
+  passwordChangedAt?: Date;
   needPasswordChange?: boolean;
 }
 
@@ -62,7 +100,7 @@ export interface RegisterInput {
 }
 
 export interface RegisterResult {
-  userId: ObjectId;
+  userId: string;
 }
 
 export interface LoginInput {

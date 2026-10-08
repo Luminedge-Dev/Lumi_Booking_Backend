@@ -1,4 +1,4 @@
-import { Prisma } from "../../generated/prisma/client.js";
+import { Prisma, type PrismaClient } from "../../generated/prisma/client.js";
 import { getPrismaClient } from "./prisma";
 
 // Prisma interactive-transaction conflict. Verified against Prisma's error
@@ -56,4 +56,24 @@ export async function runSerializableTransaction<T>(
     }
   }
   throw lastConflict;
+}
+
+// Bounded read: SET LOCAL scopes statement_timeout to one short transaction
+// (PostgreSQL equivalent of Mongo maxTimeMS). A fired timeout surfaces as
+// SQLSTATE 57014, which runPersistence translates to a TIMEOUT PersistenceError.
+export async function runWithStatementTimeout<T>(
+  client: PrismaClient,
+  timeoutMs: number,
+  fn: (tx: TransactionClient) => Promise<T>
+): Promise<T> {
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 600000) {
+    throw new Error("timeoutMs must be an integer between 1 and 600000");
+  }
+  return client.$transaction(
+    async (tx) => {
+      await tx.$executeRawUnsafe(`SET LOCAL statement_timeout = ${timeoutMs}`);
+      return fn(tx);
+    },
+    { timeout: timeoutMs + 5000 }
+  );
 }

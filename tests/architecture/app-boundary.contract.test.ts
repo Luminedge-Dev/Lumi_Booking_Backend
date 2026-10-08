@@ -3,6 +3,7 @@
 // tests/characterization/app.contract.test.ts. Reuses the same throwingCollection
 // fake (no real DB access) but goes through the new TypeScript boundary.
 import { describe, it } from "node:test";
+import { fakeCoreRepositories } from "../helpers/fake-core-repositories";
 import assert from "node:assert/strict";
 import request from "supertest";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -28,7 +29,7 @@ function fakeAuthConfig(): AuthConfig {
 
 function fakeDependencies(): AppDependencies {
   // throwingCollection returns a Proxy standing in for a Collection, not a real
-  // driver instance — the cast is the test fixture's own documented boundary,
+  // driver instance â€” the cast is the test fixture's own documented boundary,
   // same as the legacy characterization helper it wraps.
   return {
     usersCollection: throwingCollection("usersCollection") as unknown as Collection<Document>,
@@ -45,7 +46,7 @@ function createTsTestApp(corsOrigins: readonly string[] = TEST_ORIGINS, optionsO
   return createApp(fakeDependencies(), {
     corsOrigins,
     trustProxyHops: 1,
-    authConfig: fakeAuthConfig(),
+    authConfig: fakeAuthConfig(), repositories: fakeCoreRepositories(),
     ...optionsOverride,
   }) as unknown as TestApp;
 }
@@ -115,7 +116,7 @@ describe("src/app.ts boundary (architecture parity)", () => {
     const app = createApp(fakeDependencies(), {
       corsOrigins: TEST_ORIGINS,
       trustProxyHops: 2,
-      authConfig: fakeAuthConfig(),
+      authConfig: fakeAuthConfig(), repositories: fakeCoreRepositories(),
     });
     assert.equal(app.get("trust proxy"), 2);
   });
@@ -136,7 +137,7 @@ describe("src/app.ts boundary (architecture parity)", () => {
     const app = createApp(fakeDependencies(), {
       corsOrigins: TEST_ORIGINS,
       trustProxyHops: 1,
-      authConfig: fakeAuthConfig(),
+      authConfig: fakeAuthConfig(), repositories: fakeCoreRepositories(),
     });
     const stack = (app as unknown as { _router: { stack: Array<{ handle: unknown; route?: unknown; regexp: RegExp }> } })
       ._router.stack;

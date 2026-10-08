@@ -11,11 +11,13 @@ import { errorHandler } from "./app/middleware/error-handler";
 import { requestIdMiddleware } from "./app/middleware/request-id";
 import { requestObservability } from "./app/middleware/request-observability";
 import { createApiRouter } from "./app/router";
+import type { CoreRepositories } from "./app/runtime/core-repositories";
 
 export interface AppOptions {
   corsOrigins: readonly string[];
   trustProxyHops: number;
   authConfig: AuthConfig;
+  repositories: CoreRepositories;
 }
 
 export function createApp(dependencies: AppDependencies, options: AppOptions): Application {

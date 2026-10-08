@@ -1,14 +1,17 @@
-import type { ObjectId } from "mongodb";
 import type { AuthActor } from "../auth/auth.types";
 
 export type { AuthActor };
 
+// Stage 15: users live in PostgreSQL. _id is the 24-hex string id; only
+// modeled columns exist, so legacy-only keys (aliases, results maps, ...)
+// are not carried. Nullable columns that are NULL are omitted, matching the
+// Mongo "absent" shape callers already handle.
 export interface UserStatusRecord extends Record<string, unknown> {
-  _id: ObjectId;
+  _id: string;
 }
 
 export interface UserProfileRecord {
-  _id: ObjectId;
+  _id: string;
   name?: unknown;
   email?: unknown;
   contactNo?: unknown;
@@ -32,7 +35,7 @@ export interface UserMockEntry extends Record<string, unknown> {
 }
 
 export interface UserSummarySourceRecord extends Record<string, unknown> {
-  _id: ObjectId;
+  _id: string;
   name?: unknown;
   email?: unknown;
   totalMock?: unknown;
@@ -65,7 +68,7 @@ export interface UserSummaryDto {
 }
 
 export interface ProfileEditRequestRecord {
-  _id: ObjectId;
+  _id: string;
   name?: unknown;
   email?: unknown;
   profileChangeRequestStatus?: unknown;

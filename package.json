@@ -15,6 +15,7 @@
     "test:architecture": "node --import=tsx --test --test-concurrency=1 \"tests/architecture/**/*.test.ts\"",
     "test:transaction": "node --import=tsx --test --test-concurrency=1 tests/transactions/transaction-foundation.transaction.ts",
     "test:postgres": "node --import=tsx --test --test-concurrency=1 \"tests/postgres/**/*.postgres.ts\"",
+    "test:parity": "node --import=tsx --test --test-concurrency=1 \"tests/parity/**/*.parity.ts\"",
     "test:stage14:mongo": "node --import=tsx --test --test-concurrency=1 tests/migration/stage14/extract-mongo.transaction.ts",
     "migration:stage14:dry-run": "node --import=tsx scripts/migration/stage14/runner.ts dry-run",
     "migration:stage14:load": "node --import=tsx scripts/migration/stage14/runner.ts load --target stage13-dev",

@@ -11,6 +11,7 @@ import { createCollections } from "../database/collections";
 import { getIndexOps } from "../database/indexes";
 import type { AppCollections } from "../database/database.types";
 import { startLegacyReminderCron } from "../compat/legacy-jobs";
+import { createCoreRepositories } from "./core-repositories";
 
 export interface RuntimeInstance {
   app: Application;
@@ -96,6 +97,9 @@ export async function bootstrapRuntime(): Promise<RuntimeInstance> {
       {
         corsOrigins: config.corsOrigins,
         trustProxyHops: config.trustProxyHops,
+        // Lazy: no PostgreSQL connection or NEON_DB_URL read until a migrated
+        // repository serves its first request.
+        repositories: createCoreRepositories(),
         authConfig: {
           jwtSecret: config.jwtSecret,
           jwtResetPasswordSecret: config.jwtResetPasswordSecret,

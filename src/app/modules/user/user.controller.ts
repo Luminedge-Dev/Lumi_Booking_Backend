@@ -1,7 +1,7 @@
 import type { Request, Response } from "express";
 import { logger } from "../../shared/logger/logger";
 import type { UserService } from "./user.service";
-import { parseRequestProfileEditBody } from "./user.validation";
+import { isStorableNote, parseRequestProfileEditBody } from "./user.validation";
 
 export class UserController {
   constructor(private readonly userService: UserService) {}
@@ -49,6 +49,10 @@ export class UserController {
       const parsed = parseRequestProfileEditBody(req.body);
       if (!parsed) {
         res.status(400).json({ success: false, message: "Invalid or missing userId" });
+        return;
+      }
+      if (!isStorableNote(parsed.note)) {
+        res.status(400).json({ success: false, message: "Invalid note" });
         return;
       }
       const { modified } = await this.userService.requestProfileEdit(parsed.userId, parsed.note);

@@ -10,7 +10,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import bcrypt from "bcryptjs";
 import { ObjectId } from "mongodb";
-import { AuthRepository } from "../../../src/app/modules/auth/auth.repository";
+import { FakeUsersCollection } from "../../helpers/fake-users-collection";
+import { FakeUsersAuthRepository } from "../../helpers/fake-users-repositories";
 import { AuthService, AuthHttpError } from "../../../src/app/modules/auth/auth.service";
 import type { AuthConfig } from "../../../src/app/modules/auth/auth.types";
 
@@ -25,46 +26,24 @@ function fakeConfig(): AuthConfig {
   };
 }
 
-// Fake collection, not a mock of AuthRepository itself: exercising the real
-// AuthRepository against a fake Mongo collection (same shape as
-// tests/helpers/fake-users-collection.ts, trimmed to what's needed here)
-// keeps this test honest about the repository's own query shapes too.
-class FakeCollection {
-  constructor(private docs: Array<Record<string, unknown>> = []) {}
-  async findOne(filter: Record<string, unknown>) {
-    return (
-      this.docs.find((d) =>
-        Object.entries(filter).every(([k, v]) => (v instanceof ObjectId ? (d[k] as ObjectId)?.equals?.(v) : d[k] === v))
-      ) ?? null
-    );
-  }
-  async insertOne(doc: Record<string, unknown>) {
-    this.docs.push(doc);
-    return { insertedId: doc._id };
-  }
-  async updateOne(filter: Record<string, unknown>, update: { $set: Record<string, unknown> }) {
-    const doc = this.docs.find((d) =>
-      Object.entries(filter).every(([k, v]) => (v instanceof ObjectId ? (d[k] as ObjectId)?.equals?.(v) : d[k] === v))
-    );
-    if (!doc) return { matchedCount: 0, modifiedCount: 0 };
-    Object.assign(doc, update.$set);
-    return { matchedCount: 1, modifiedCount: 1 };
-  }
-}
-
+// Fake users collection + the Stage 15 users-backed repository adapter (same
+// semantics the PostgreSQL repository has above the repository boundary; real
+// PostgreSQL behavior is proven in tests/postgres and tests/parity).
 // Simulates the real registration race at the repository level: insertOne
 // always throws a Mongo-shaped E11000 error, regardless of what's in docs --
-// exercises auth.service.ts's register() catch branch directly, independent
-// of the HTTP-level proofs in the characterization/parity suites.
-class ThrowingInsertCollection extends FakeCollection {
+// the adapter maps it to UserEmailConflictError exactly as the PostgreSQL
+// repository maps its serialized exact-email recheck.
+class ThrowingInsertCollection extends FakeUsersCollection {
   async insertOne(): Promise<never> {
     throw Object.assign(new Error("E11000 duplicate key error"), { code: 11000 });
   }
 }
 
+function hex(id: unknown): string {
+  return (id as ObjectId).toHexString();
+}
 function makeService(docs: Array<Record<string, unknown>> = []): AuthService {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const repository = new AuthRepository(new FakeCollection(docs) as any);
+  const repository = new FakeUsersAuthRepository(new FakeUsersCollection(docs as never));
   return new AuthService(repository, fakeConfig());
 }
 
@@ -125,15 +104,14 @@ describe("AuthService.register (unit)", () => {
 
   it("never persists client-supplied role/status/isDeleted/mock/totalMock", async () => {
     const docs: Array<Record<string, unknown>> = [];
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const repo = new AuthRepository(new FakeCollection(docs) as any);
+    const repo = new FakeUsersAuthRepository(new FakeUsersCollection(docs as never));
     const service = new AuthService(repo, fakeConfig());
     // RegisterInput has no role/status/isDeleted/mock/totalMock fields at
     // all -- the type system itself is the first guard; this asserts the
     // actual persisted document still only ever carries the server-owned
     // values, regardless of what a future caller might try to smuggle in.
     const result = await service.register({ email: "new@example.test", password: "longenough1" });
-    const stored = docs.find((d) => d._id === result.userId);
+    const stored = docs.find((d) => hex(d._id) === result.userId);
     assert.equal(stored?.role, "user");
     assert.equal(stored?.status, "active");
     assert.equal(stored?.isDeleted, false);
@@ -142,8 +120,7 @@ describe("AuthService.register (unit)", () => {
   });
 
   it("maps a Mongo E11000 insert error to AuthHttpError(409, User already exists)", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const repo = new AuthRepository(new ThrowingInsertCollection() as any);
+    const repo = new FakeUsersAuthRepository(new ThrowingInsertCollection());
     const service = new AuthService(repo, fakeConfig());
     await assert.rejects(
       () => service.register({ email: "race2@example.test", password: "longenough1" }),
@@ -155,11 +132,10 @@ describe("AuthService.register (unit)", () => {
 describe("AuthService password hashing (unit)", () => {
   it("register hashes with bcrypt cost 10", async () => {
     const docs: Array<Record<string, unknown>> = [];
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const repo = new AuthRepository(new FakeCollection(docs) as any);
+    const repo = new FakeUsersAuthRepository(new FakeUsersCollection(docs as never));
     const service = new AuthService(repo, fakeConfig());
     const result = await service.register({ email: "cost@example.test", password: "longenough1" });
-    const stored = docs.find((d) => d._id === result.userId);
+    const stored = docs.find((d) => hex(d._id) === result.userId);
     const rounds = bcrypt.getRounds(stored?.password as string);
     assert.equal(rounds, 10);
   });

@@ -29,6 +29,36 @@ const registerSchema = z
   })
   .passthrough();
 
+// Stage 15: PostgreSQL columns are typed (name NOT NULL text, optional text
+// columns, JSON array result, no NUL). Mongo persisted any BSON value; a body
+// that cannot be stored is rejected up front with one fixed 400 that never
+// echoes the offending value. Documented intentional difference.
+const REGISTRATION_TEXT_FIELDS = ["name", "contactNo", "passportNumber", "sex", "dateOfBirth", "transactionId"] as const;
+
+function isNulFreeText(value: unknown): value is string {
+  return typeof value === "string" && !value.includes("\u0000");
+}
+
+function assertStorableRegistration(email: string, raw: Record<string, unknown>): void {
+  const invalid = (): never => {
+    throw new AuthHttpError(400, { message: "Invalid registration data" });
+  };
+  if (!isNulFreeText(email)) invalid();
+  for (const field of REGISTRATION_TEXT_FIELDS) {
+    const value = raw[field];
+    if (value !== undefined && value !== null && !isNulFreeText(value)) invalid();
+  }
+  const result = raw.result;
+  if (result !== undefined && result !== null) {
+    if (!Array.isArray(result)) invalid();
+    try {
+      if (JSON.stringify(result).includes("\\u0000")) invalid();
+    } catch {
+      invalid();
+    }
+  }
+}
+
 export function parseRegisterBody(body: unknown): RegisterInput {
   const result = registerSchema.safeParse(body ?? {});
   if (!result.success) {
@@ -39,6 +69,7 @@ export function parseRegisterBody(body: unknown): RegisterInput {
   }
 
   const raw = (body ?? {}) as Record<string, unknown>;
+  assertStorableRegistration(result.data.email, raw);
   // SECURITY: role/status/isDeleted/mock/totalMock are server-owned, never read from the body.
   return {
     email: result.data.email,

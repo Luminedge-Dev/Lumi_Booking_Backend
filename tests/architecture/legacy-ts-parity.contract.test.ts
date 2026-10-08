@@ -17,6 +17,13 @@
 // legacy middleware/auth.js reads it directly, the native module receives
 // the same value via fakeAuthConfig().
 import { describe, it } from "node:test";
+import {
+  courseRecordFromMongoDoc,
+  FakeCourseRepository,
+  FakeScheduleRepository,
+  fakeCoreRepositories,
+  scheduleRecordFromMongoDoc,
+} from "../helpers/fake-core-repositories";
 import assert from "node:assert/strict";
 import request from "supertest";
 import jwt from "jsonwebtoken";
@@ -27,6 +34,7 @@ import type { AppDependencies } from "../../src/app/database/database.types";
 import type { AuthConfig } from "../../src/app/modules/auth/auth.types";
 import { throwingCollection } from "../helpers/create-test-app";
 import { FakeUsersCollection } from "../helpers/fake-users-collection";
+import { usersBackedRepositories } from "../helpers/fake-users-repositories";
 import { FakeSchedulesCollection, type FakeScheduleDoc } from "../helpers/fake-schedules-collection";
 
 process.env.JWT_SECRET = "test-only-secret";
@@ -58,6 +66,24 @@ function fakeAuthConfig(): AuthConfig {
   };
 }
 
+const PARITY_COURSE = new ObjectId().toHexString();
+
+// A Mongo schedule document carrying exactly the modeled (Stage 13) fields.
+function modeledScheduleDoc(courseId: string): FakeScheduleDoc {
+  return {
+    _id: new ObjectId(),
+    courseId,
+    startDate: "2026-10-05",
+    endDate: "2026-10-05",
+    name: "IELTS",
+    testSystem: "",
+    testType: "Computer-Based",
+    status: "Scheduled",
+    timeSlots: [{ startTime: "09:00:00", endTime: "10:00:00", slot: 10, totalSlot: 10, slotId: "1" }],
+    createdAt: new Date("2026-10-01T00:00:00.000Z"),
+  } as FakeScheduleDoc;
+}
+
 interface Seed {
   users: Array<{ _id: ObjectId; email: string; password: string; role: string }>;
   schedules: FakeScheduleDoc[];
@@ -79,11 +105,19 @@ function buildLegacy(seed: Seed) {
   });
 }
 
+// What the Stage 14 ETL would have loaded into PostgreSQL for this seed.
+function candidateRepositories(seed: Seed, users: FakeUsersCollection) {
+  return fakeCoreRepositories({
+    ...usersBackedRepositories(users),
+    course: new FakeCourseRepository(seed.courses.map(courseRecordFromMongoDoc)),
+    schedule: new FakeScheduleRepository(seed.schedules.map(scheduleRecordFromMongoDoc)),
+  });
+}
+
 function buildCandidate(seed: Seed) {
+  const users = new FakeUsersCollection(seed.users.map((u) => ({ ...u })));
   const dependencies: AppDependencies = {
-    usersCollection: new FakeUsersCollection(
-      seed.users.map((u) => ({ ...u }))
-    ) as unknown as Collection<Document>,
+    usersCollection: users as unknown as Collection<Document>,
     coursesCollection: {
       find: () => ({ toArray: async () => seed.courses.map((c) => ({ ...c })) }),
     } as unknown as Collection<Document>,
@@ -96,7 +130,7 @@ function buildCandidate(seed: Seed) {
   return createCandidateApp(dependencies, {
     corsOrigins: ["http://localhost:3000"],
     trustProxyHops: 1,
-    authConfig: fakeAuthConfig(),
+    authConfig: fakeAuthConfig(), repositories: candidateRepositories(seed, users),
   });
 }
 
@@ -159,7 +193,7 @@ describe("legacy-vs-TS differential parity (Stage 12.5 harness)", () => {
     const seed: Seed = {
       users: [],
       schedules: [],
-      courses: [{ _id: new ObjectId(), name: "IELTS", testSystem: "Academic" }],
+      courses: [{ _id: new ObjectId(), name: "IELTS", image: "ielts.png", homeBasedSystems: ["windows"] }],
     };
     const [legacyRes, candidateRes] = await Promise.all([
       request(buildLegacy(seed)).get("/api/v1/courses"),
@@ -170,11 +204,27 @@ describe("legacy-vs-TS differential parity (Stage 12.5 harness)", () => {
     assert.deepEqual(candidateRes.body, legacyRes.body);
   });
 
+  it("EXPECTED INTENTIONAL (Stage 15): GET /courses drops unmodeled legacy fields and defaults homeBasedSystems to []", async () => {
+    const seed: Seed = {
+      users: [],
+      schedules: [],
+      courses: [{ _id: new ObjectId(), name: "IELTS", image: "ielts.png", testSystem: "Academic" }],
+    };
+    const [legacyRes, candidateRes] = await Promise.all([
+      request(buildLegacy(seed)).get("/api/v1/courses"),
+      request(buildCandidate(seed)).get("/api/v1/courses"),
+    ]);
+    assert.equal(legacyRes.body.courses[0].testSystem, "Academic");
+    assert.ok(!("homeBasedSystems" in legacyRes.body.courses[0]));
+    assert.ok(!("testSystem" in candidateRes.body.courses[0]));
+    assert.deepEqual(candidateRes.body.courses[0].homeBasedSystems, []);
+  });
+
   it("PARITY ONLY: POST /admin/create-schedule returns identical bodies", async () => {
     const admin = makeUser("admin");
     const seed: Seed = { users: [admin], schedules: [], courses: [] };
     const payload = [
-      { courseId: "c1", startDate: "2026-10-05", endDate: "2026-10-05", timeSlots: [{ startTime: "09:00", endTime: "10:00" }] },
+      { courseId: PARITY_COURSE, startDate: "2026-10-05", endDate: "2026-10-05", testType: "Computer-Based", timeSlots: [{ startTime: "09:00", endTime: "10:00" }] },
     ];
     const token = signToken(admin._id, "admin");
     const [legacyRes, candidateRes] = await Promise.all([
@@ -186,26 +236,30 @@ describe("legacy-vs-TS differential parity (Stage 12.5 harness)", () => {
     assert.deepEqual(scrub(candidateRes.body), scrub(legacyRes.body));
   });
 
+  it("EXPECTED INTENTIONAL (Stage 15): create-schedule rejects an entry PostgreSQL cannot store (legacy persisted it)", async () => {
+    const admin = makeUser("admin");
+    const seed: Seed = { users: [admin], schedules: [], courses: [] };
+    const payload = [{ courseId: "c1", startDate: "2026-10-05", endDate: "2026-10-05", timeSlots: [{ startTime: "09:00", endTime: "10:00" }] }];
+    const token = signToken(admin._id, "admin");
+    const [legacyRes, candidateRes] = await Promise.all([
+      request(buildLegacy(seed)).post("/api/v1/admin/create-schedule").set("Authorization", `Bearer ${token}`).send(payload),
+      request(buildCandidate(seed)).post("/api/v1/admin/create-schedule").set("Authorization", `Bearer ${token}`).send(payload),
+    ]);
+    assert.equal(legacyRes.status, 201);
+    assert.equal(candidateRes.status, 409);
+    assert.equal(candidateRes.body.failedSchedules[0].message, "courseId must be a valid course id");
+  });
+
   it("PARITY ONLY: GET /schedule/:date/:courseId returns identical bodies", async () => {
     const user = makeUser();
     const seed: Seed = {
       users: [user],
-      schedules: [
-        {
-          _id: new ObjectId(),
-          courseId: "c1",
-          startDate: "2026-10-05",
-          endDate: "2026-10-05",
-          status: "Scheduled",
-          timeSlots: [{ slotId: "1", slot: 1, startTime: "09:00", endTime: "10:00" }],
-        } as FakeScheduleDoc,
-      ],
-      courses: [],
+      schedules: [modeledScheduleDoc(PARITY_COURSE)],      courses: [],
     };
     const token = signToken(user._id);
     const [legacyRes, candidateRes] = await Promise.all([
-      request(buildLegacy(seed)).get("/api/v1/schedule/2026-10-05/c1").set("Authorization", `Bearer ${token}`),
-      request(buildCandidate(seed)).get("/api/v1/schedule/2026-10-05/c1").set("Authorization", `Bearer ${token}`),
+      request(buildLegacy(seed)).get(`/api/v1/schedule/2026-10-05/${PARITY_COURSE}`).set("Authorization", `Bearer ${token}`),
+      request(buildCandidate(seed)).get(`/api/v1/schedule/2026-10-05/${PARITY_COURSE}`).set("Authorization", `Bearer ${token}`),
     ]);
     assert.equal(legacyRes.status, 200);
     assert.equal(candidateRes.status, 200);
@@ -214,20 +268,10 @@ describe("legacy-vs-TS differential parity (Stage 12.5 harness)", () => {
 
   it("EXPECTED NEW: monthly schedule endpoint lives only in the candidate (legacy degenerately matches it as a daily read)", async () => {
     const user = makeUser();
-    const courseId = new ObjectId().toString();
+    const courseId = new ObjectId().toHexString();
     const seed: Seed = {
       users: [user],
-      schedules: [
-        {
-          _id: new ObjectId(),
-          courseId,
-          startDate: "2026-10-05",
-          endDate: "2026-10-05",
-          status: "Scheduled",
-          timeSlots: [{ slotId: "1", slot: 1, startTime: "09:00", endTime: "10:00" }],
-        } as FakeScheduleDoc,
-      ],
-      courses: [],
+      schedules: [modeledScheduleDoc(courseId)],      courses: [],
     };
     const token = signToken(user._id);
     const [legacyRes, candidateRes] = await Promise.all([

@@ -1,4 +1,6 @@
-// Open record: never drop unknown fields from stored documents.
+// Public schedule shape (legacy field names). Persisted in PostgreSQL since
+// Stage 15; only modeled columns exist, so fields outside the Stage 13 schema
+// are not carried (declared intentional difference vs Mongo passthrough).
 export interface ScheduleRecord extends Record<string, unknown> {
   _id: unknown;
   courseId?: string;
@@ -9,7 +11,7 @@ export interface ScheduleRecord extends Record<string, unknown> {
   testType?: string;
   status?: string;
   timeSlots?: unknown[];
-  createdAt?: string;
+  createdAt?: string | Date;
 }
 
 export interface NormalizedTimeSlot {
@@ -32,11 +34,32 @@ export interface ParsedCreateScheduleEntry {
   timeSlots: unknown[];
 }
 
+// Closed sets the PostgreSQL schema can store (enums TestType / ScheduleStatus).
+export type StorableTestType = "Computer-Based" | "Paper-Based";
+export type StorableScheduleStatus = "Scheduled" | "Cancelled";
+
 export interface SlotIdKey {
-  courseId: unknown;
-  startDate: unknown;
-  endDate: unknown;
-  testType: unknown;
+  courseId: string;
+  startDate: string;
+  endDate: string;
+  testType: StorableTestType;
+}
+
+export interface StoredTimeSlot extends NormalizedTimeSlot {
+  slotId: string;
+}
+
+// A create-schedule entry already proven storable (see toStorableSchedule).
+export interface NewScheduleRecord {
+  courseId: string;
+  startDate: string;
+  endDate: string;
+  name: string;
+  testSystem: string;
+  testType: StorableTestType;
+  status: StorableScheduleStatus;
+  timeSlots: StoredTimeSlot[];
+  createdAt: Date;
 }
 
 export interface CreateScheduleSuccessItem {

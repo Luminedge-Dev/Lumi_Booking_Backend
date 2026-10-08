@@ -20,7 +20,7 @@ export class UserService {
     return record ? toUserSummaryDto(record) : null;
   }
 
-  async requestProfileEdit(userId: string, note: unknown): Promise<{ modified: boolean }> {
+  async requestProfileEdit(userId: string, note: string): Promise<{ modified: boolean }> {
     const { modifiedCount } = await this.repository.submitProfileEditRequest(userId, note);
     return { modified: modifiedCount > 0 };
   }

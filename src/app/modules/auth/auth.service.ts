@@ -2,6 +2,7 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { ObjectId } from "mongodb";
 import type { AuthRepository } from "./auth.repository";
+import { newObjectIdHex } from "../../shared/utils/object-id";
 import type {
   AuthAccountState,
   AuthConfig,
@@ -9,10 +10,12 @@ import type {
   ForgotPasswordInput,
   LoginInput,
   LoginResult,
+  NewUserRecord,
   RegisterInput,
   RegisterResult,
   ResetPasswordInput,
 } from "./auth.types";
+import { UserEmailConflictError } from "./auth.types";
 
 // Thrown for every locked legacy status/body pair; the controller writes
 // res.status(status).json(body) verbatim, never via the shared errorHandler.
@@ -54,32 +57,33 @@ export class AuthService {
 
     const hashedPassword = await bcrypt.hash(input.password, 10);
 
-    const newUserId = new ObjectId();
-    const newUser = {
+    const newUserId = newObjectIdHex();
+    const now = new Date();
+    const newUser: NewUserRecord = {
       _id: newUserId,
-      name: input.name,
+      name: input.name as string,
       email: normalizedEmail,
-      contactNo: input.contactNo,
-      passportNumber: input.passportNumber,
-      sex: input.sex,
-      dateOfBirth: input.dateOfBirth,
+      contactNo: input.contactNo as string | null | undefined,
+      passportNumber: input.passportNumber as string | null | undefined,
+      sex: input.sex as string | null | undefined,
+      dateOfBirth: input.dateOfBirth as string | null | undefined,
       password: hashedPassword,
       mock: 0,
       totalMock: 0,
-      result: input.result,
-      transactionId: input.transactionId,
+      result: (input.result ?? null) as unknown[] | null,
+      transactionId: input.transactionId as string | null | undefined,
       role: "user",
       status: "active",
       isDeleted: false,
-      createdAt: new Date(),
-      updatedAt: new Date(),
+      createdAt: now,
+      updatedAt: now,
     };
 
     try {
       await this.repository.insertUser(newUser);
     } catch (error) {
-      // The checks above are not atomic; the unique {email} index is the real guard.
-      if ((error as { code?: number })?.code === 11000) {
+      // The checks above are not atomic; the repository serializes inserts per email.
+      if (error instanceof UserEmailConflictError) {
         throw new AuthHttpError(409, { message: "User already exists" });
       }
       throw error;

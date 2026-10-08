@@ -1,16 +1,26 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { ObjectId } from "mongodb";
-import type { Collection, Document } from "mongodb";
-import { ScheduleRepository } from "../../../src/app/modules/schedule/schedule.repository";
 import { ScheduleService } from "../../../src/app/modules/schedule/schedule.service";
-import { ScheduleQueryTimeoutError, type SlotIdKey } from "../../../src/app/modules/schedule/schedule.types";
-import { FakeSchedulesCollection, type FakeScheduleDoc } from "../../helpers/fake-schedules-collection";
+import type { ScheduleRecord, SlotIdKey } from "../../../src/app/modules/schedule/schedule.types";
+import { newObjectIdHex } from "../../../src/app/shared/utils/object-id";
+import { FakeScheduleRepository, TimeoutScheduleRepository, scheduleRecord } from "../../helpers/fake-core-repositories";
 
-function makeService(docs: FakeScheduleDoc[] = []): { service: ScheduleService; schedules: FakeSchedulesCollection } {
-  const schedules = new FakeSchedulesCollection(docs);
-  const repository = new ScheduleRepository(schedules as unknown as Collection<Document>);
-  return { service: new ScheduleService(repository), schedules };
+function makeService(records: ScheduleRecord[] = []): { service: ScheduleService; repository: FakeScheduleRepository } {
+  const repository = new FakeScheduleRepository(records);
+  return { service: new ScheduleService(repository), repository };
+}
+
+const COURSE = newObjectIdHex();
+
+function entry(overrides: Record<string, unknown> = {}) {
+  return {
+    courseId: COURSE,
+    startDate: "2026-10-05",
+    endDate: "2026-10-05",
+    testType: "Computer-Based",
+    timeSlots: [{ startTime: "09:00", endTime: "10:00" }],
+    ...overrides,
+  };
 }
 
 describe("ScheduleService.createSchedules -- partial-batch orchestration", () => {
@@ -24,149 +34,160 @@ describe("ScheduleService.createSchedules -- partial-batch orchestration", () =>
 
   it("continues past an expected validation failure (no timeSlots)", async () => {
     const { service } = makeService();
-    const result = await service.createSchedules([{ courseId: "c1", startDate: "2026-10-05", endDate: "2026-10-05" }]);
+    const result = await service.createSchedules([entry({ timeSlots: undefined })]);
     assert.equal(result.failed.length, 1);
     assert.equal(result.failed[0].message, "No time slots provided.");
   });
 
   it("single valid entry -> one successful item, exact shape", async () => {
     const { service } = makeService();
-    const result = await service.createSchedules([
-      { courseId: "c1", startDate: "2026-10-05", endDate: "2026-10-05", timeSlots: [{ startTime: "09:00", endTime: "10:00" }] },
-    ]);
+    const result = await service.createSchedules([entry()]);
     assert.equal(result.successful.length, 1);
     assert.equal(result.successful[0].assignedSlotId, "1");
-    assert.equal(result.successful[0].courseId, "c1");
+    assert.equal(result.successful[0].courseId, COURSE);
   });
 
-  it("slot-ID incrementing against a fake repository: multiple slots in one entry get consecutive IDs", async () => {
-    const { service } = makeService();
+  it("slot-ID incrementing: multiple slots in one entry get consecutive IDs, one stored schedule per slot", async () => {
+    const { service, repository } = makeService();
     const result = await service.createSchedules([
-      {
-        courseId: "c1",
-        startDate: "2026-10-05",
-        endDate: "2026-10-05",
+      entry({
         timeSlots: [
           { startTime: "09:00", endTime: "10:00" },
           { startTime: "11:00", endTime: "12:00" },
         ],
-      },
+      }),
     ]);
     assert.deepEqual(
       result.successful.map((s) => s.assignedSlotId),
       ["1", "2"]
     );
+    assert.equal(repository.records.length, 2);
   });
 
-  it("an unexpected repository error propagates out of createSchedules (does not get swallowed into failedSchedules)", async () => {
-    class ThrowingRepository extends ScheduleRepository {
+  it("an unexpected repository error propagates out of createSchedules (not swallowed into failedSchedules)", async () => {
+    class ThrowingRepository extends FakeScheduleRepository {
       async insertSchedule(): Promise<void> {
         throw new Error("simulated unexpected failure");
       }
     }
-    const repository = new ThrowingRepository(new FakeSchedulesCollection() as unknown as Collection<Document>);
-    const service = new ScheduleService(repository);
-    await assert.rejects(
-      () =>
-        service.createSchedules([
-          { courseId: "c1", startDate: "2026-10-05", endDate: "2026-10-05", timeSlots: [{ startTime: "09:00", endTime: "10:00" }] },
-        ]),
-      /simulated unexpected failure/
-    );
+    const service = new ScheduleService(new ThrowingRepository());
+    await assert.rejects(() => service.createSchedules([entry()]), /simulated unexpected failure/);
   });
 
-  it("CLOSURE PATCH: failed-row fallback uses || not ?? -- a falsy-non-nullish courseId (0) still becomes ''", async () => {
+  it("failed-row fallback uses || not ?? -- a falsy-non-nullish courseId (0) still becomes ''", async () => {
     const { service } = makeService();
     const result = await service.createSchedules([{ courseId: 0, startDate: "2026-10-05", endDate: "2026-10-05" }]);
     assert.equal(result.failed.length, 1);
     assert.strictEqual(result.failed[0].courseId, "");
   });
 
-  it("CLOSURE PATCH: persisted doc defaults testType to '' while the max-slot lookup key stays raw (undefined)", async () => {
-    const schedules = new FakeSchedulesCollection();
+  it("allocator key is the storable (courseId, startDate, endDate, testType) tuple", async () => {
     let observedKey: SlotIdKey | undefined;
-    class SpyRepository extends ScheduleRepository {
+    class SpyRepository extends FakeScheduleRepository {
       async findMaxSlotId(key: SlotIdKey): Promise<number> {
         observedKey = key;
         return super.findMaxSlotId(key);
       }
     }
-    const service = new ScheduleService(new SpyRepository(schedules as unknown as Collection<Document>));
-    await service.createSchedules([
-      { courseId: "c1", startDate: "2026-10-05", endDate: "2026-10-05", timeSlots: [{ startTime: "09:00", endTime: "10:00" }] },
-    ]);
-    const stored = (schedules.find() as FakeScheduleDoc[])[0];
-    assert.strictEqual(stored.testType, "");
-    assert.strictEqual(observedKey?.testType, undefined);
+    const service = new ScheduleService(new SpyRepository());
+    await service.createSchedules([entry({ courseId: COURSE.toUpperCase() })]);
+    assert.deepEqual(observedKey, { courseId: COURSE, startDate: "2026-10-05", endDate: "2026-10-05", testType: "Computer-Based" });
   });
 
-  it("CLOSURE PATCH: findMaxSlotId is called before timeSlot normalization -- a throwing max-slot read surfaces even when timeSlots is empty/absent", async () => {
-    class ThrowingMaxSlotRepository extends ScheduleRepository {
+  it("an empty/absent timeSlots entry fails with the legacy message without touching the allocator", async () => {
+    class ThrowingMaxSlotRepository extends FakeScheduleRepository {
       async findMaxSlotId(): Promise<number> {
         throw new Error("simulated max-slot-ID query failure");
       }
     }
-    const repository = new ThrowingMaxSlotRepository(new FakeSchedulesCollection() as unknown as Collection<Document>);
-    const service = new ScheduleService(repository);
-    // Valid required fields, no timeSlots at all -- if normalization/empty-
-    // check ran before the max-slot read, this would resolve to a
-    // failed[] entry instead of propagating the repository's throw.
-    await assert.rejects(
-      () => service.createSchedules([{ courseId: "c1", startDate: "2026-10-05", endDate: "2026-10-05" }]),
-      /simulated max-slot-ID query failure/
-    );
+    const service = new ScheduleService(new ThrowingMaxSlotRepository());
+    const result = await service.createSchedules([entry({ timeSlots: [] })]);
+    assert.equal(result.failed[0].message, "No time slots provided.");
+  });
+
+  it("a throwing allocator read surfaces for an otherwise storable entry", async () => {
+    class ThrowingMaxSlotRepository extends FakeScheduleRepository {
+      async findMaxSlotId(): Promise<number> {
+        throw new Error("simulated max-slot-ID query failure");
+      }
+    }
+    const service = new ScheduleService(new ThrowingMaxSlotRepository());
+    await assert.rejects(() => service.createSchedules([entry()]), /simulated max-slot-ID query failure/);
   });
 
   it("KNOWN CONCURRENCY DEFECT -- legacy-compatible allocator is not atomic across concurrent requests (characterization, not a guarantee)", async () => {
-    // Two independent createSchedules() calls for the SAME key, started
-    // concurrently, both read the same max (0) before either insert
-    // completes -- they can allocate the SAME next slotId. This proves the
-    // real, pre-existing race is reproduced by the native implementation,
-    // not newly introduced and not fixed. See D-029: fix UNASSIGNED pending
-    // a future design decision; this test documents the defect, it does
-    // not assert correctness.
+    // Two independent createSchedules() calls for the SAME key both read
+    // max=0 before either insert completes and allocate the SAME slotId.
+    // The legacy race is reproduced, not fixed (D-029: fix UNASSIGNED).
     const { service } = makeService();
-    const entry = (courseId: string) => [
-      { courseId, startDate: "2026-10-05", endDate: "2026-10-05", timeSlots: [{ startTime: "09:00", endTime: "10:00" }] },
-    ];
-    const [a, b] = await Promise.all([service.createSchedules(entry("race-course")), service.createSchedules(entry("race-course"))]);
-    // Both observed max=0 and both assigned slotId "1" -- the race.
+    const [a, b] = await Promise.all([service.createSchedules([entry()]), service.createSchedules([entry()])]);
     assert.equal(a.successful[0].assignedSlotId, "1");
     assert.equal(b.successful[0].assignedSlotId, "1");
   });
 });
 
+describe("ScheduleService.createSchedules -- Stage 15 storability (intentional difference vs Mongo)", () => {
+  const cases: Array<[string, Record<string, unknown>, string]> = [
+    ["non-ObjectId courseId", { courseId: "c1" }, "courseId must be a valid course id"],
+    ["impossible calendar date", { startDate: "2026-02-31", endDate: "2026-02-31" }, "startDate and endDate must be YYYY-MM-DD calendar dates"],
+    ["non-date string", { startDate: "tomorrow" }, "startDate and endDate must be YYYY-MM-DD calendar dates"],
+    ["missing testType (Mongo stored '')", { testType: undefined }, "testType must be Computer-Based or Paper-Based"],
+    ["unknown testType", { testType: "Oral" }, "testType must be Computer-Based or Paper-Based"],
+    ["unknown status", { status: "Draft" }, "status must be Scheduled or Cancelled"],
+    ["non-text name", { name: 5 }, "name and testSystem must be text"],
+    ["NUL in name", { name: "a\u0000b" }, "name and testSystem must not contain NUL characters"],
+    ["fractional seats", { timeSlots: [{ startTime: "09:00", endTime: "10:00", slot: 1.5 }] }, "slot and totalSlot must be whole numbers"],
+    ["seat count beyond 32-bit", { timeSlots: [{ startTime: "09:00", endTime: "10:00", slot: 3000000000 }] }, "slot and totalSlot must be whole numbers"],
+  ];
+  for (const [label, overrides, message] of cases) {
+    it(`rejects ${label} per entry with a fixed message, persisting nothing`, async () => {
+      const { service, repository } = makeService();
+      const result = await service.createSchedules([entry(overrides)]);
+      assert.equal(result.successful.length, 0);
+      assert.equal(result.failed[0].message, message);
+      assert.equal(repository.records.length, 0);
+    });
+  }
+
+  it("a storable entry after a rejected one still succeeds (per-entry isolation)", async () => {
+    const { service } = makeService();
+    const result = await service.createSchedules([entry({ testType: "Oral" }), entry()]);
+    assert.equal(result.failed.length, 1);
+    assert.equal(result.successful.length, 1);
+  });
+
+  it("mixed-case courseId is canonicalized to lowercase hex before storage and echoed as sent", async () => {
+    const { service, repository } = makeService();
+    const result = await service.createSchedules([entry({ courseId: COURSE.toUpperCase() })]);
+    assert.equal(repository.records[0].courseId, COURSE);
+    assert.equal(result.successful[0].courseId, COURSE.toUpperCase());
+  });
+});
+
 describe("ScheduleService.getByDateAndCourse", () => {
   it("returns mapped records for the exact course+date match", async () => {
-    const doc: FakeScheduleDoc = {
-      _id: new ObjectId(),
-      courseId: "c1",
-      startDate: "2026-10-05",
-      endDate: "2026-10-05",
-      status: "Scheduled",
-      timeSlots: [{ slotId: "1" }],
-    };
+    const doc = scheduleRecord();
     const { service } = makeService([doc]);
-    const result = await service.getByDateAndCourse("2026-10-05", "c1");
+    const result = await service.getByDateAndCourse("2026-10-05", doc.courseId as string);
     assert.equal(result.length, 1);
   });
 });
 
 describe("ScheduleService.getByCourseAndMonth -- month-range calculation consumer", () => {
   it("filters by the given string month range", async () => {
-    const inRange: FakeScheduleDoc = { _id: new ObjectId(), courseId: "c1", startDate: "2026-10-15", status: "Scheduled" };
-    const outOfRange: FakeScheduleDoc = { _id: new ObjectId(), courseId: "c1", startDate: "2026-11-01", status: "Scheduled" };
+    const courseId = newObjectIdHex();
+    const inRange = scheduleRecord({ courseId, startDate: "2026-10-15" });
+    const outOfRange = scheduleRecord({ courseId, startDate: "2026-11-01" });
     const { service } = makeService([inRange, outOfRange]);
-    const result = await service.getByCourseAndMonth("c1", { startInclusive: "2026-10-01", endExclusive: "2026-11-01" });
+    const result = await service.getByCourseAndMonth(courseId, { startInclusive: "2026-10-01", endExclusive: "2026-11-01" });
     assert.equal(result.length, 1);
-    assert.equal(result[0]._id?.toString(), inRange._id.toString());
+    assert.equal(result[0]._id, inRange._id);
   });
 });
 
 describe("ScheduleService.listAdmin -- pagination clamp normalization consumer", () => {
   it("returns {schedules,total,page,limit}", async () => {
-    const docs = Array.from({ length: 3 }, () => ({ _id: new ObjectId(), courseId: "c1" }) as FakeScheduleDoc);
-    const { service } = makeService(docs);
+    const { service } = makeService([scheduleRecord(), scheduleRecord(), scheduleRecord()]);
     const result = await service.listAdmin({}, { page: 1, limit: 100, skip: 0 });
     assert.equal(result.total, 3);
     assert.equal(result.page, 1);
@@ -175,26 +196,20 @@ describe("ScheduleService.listAdmin -- pagination clamp normalization consumer",
   });
 
   it("propagates ScheduleQueryTimeoutError from either concurrent query", async () => {
-    class TimeoutRepository extends ScheduleRepository {
-      async listAdmin(): Promise<never> {
-        throw new ScheduleQueryTimeoutError();
-      }
-    }
-    const repository = new TimeoutRepository(new FakeSchedulesCollection() as unknown as Collection<Document>);
-    const service = new ScheduleService(repository);
-    await assert.rejects(() => service.listAdmin({}, { page: 1, limit: 100, skip: 0 }), ScheduleQueryTimeoutError);
+    const service = new ScheduleService(new TimeoutScheduleRepository());
+    await assert.rejects(() => service.listAdmin({}, { page: 1, limit: 100, skip: 0 }), { name: "ScheduleQueryTimeoutError" });
   });
 });
 
 describe("ScheduleService.deleteById -- delete result mapping", () => {
   it("returns true when a document was deleted", async () => {
-    const doc: FakeScheduleDoc = { _id: new ObjectId(), courseId: "c1" };
+    const doc = scheduleRecord();
     const { service } = makeService([doc]);
-    assert.equal(await service.deleteById(doc._id.toString()), true);
+    assert.equal(await service.deleteById(doc._id as string), true);
   });
 
   it("returns false when no document matched", async () => {
     const { service } = makeService();
-    assert.equal(await service.deleteById(new ObjectId().toString()), false);
+    assert.equal(await service.deleteById(newObjectIdHex()), false);
   });
 });

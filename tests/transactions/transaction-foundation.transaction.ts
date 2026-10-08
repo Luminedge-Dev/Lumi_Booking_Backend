@@ -1,4 +1,4 @@
-// Stage 10 — Transaction-Capable Test Foundation.
+// Stage 10 â€” Transaction-Capable Test Foundation.
 //
 // Characterizes (does not redesign) the four existing real-Mongo
 // transaction workflows in routes/booking.routes.js and
@@ -12,6 +12,7 @@
 // *.transaction.ts suffix (not *.test.ts) so the bare `pnpm test` (fast
 // fake/in-memory suite) never implicitly starts a real MongoDB process.
 import { after, before, beforeEach, describe, it } from "node:test";
+import { fakeCoreRepositories } from "../helpers/fake-core-repositories";
 import assert from "node:assert/strict";
 import request from "supertest";
 import { ObjectId } from "mongodb";
@@ -507,7 +508,7 @@ describe("TS candidate (src/app.ts) real-Mongo transaction smoke", () => {
   it("Home booking commits through the candidate app's real composition root with a real MongoClient", async () => {
     const actor = await seedUser(testDb.collections.usersCollection, { mock: 1 });
     const dependencies: AppDependencies = { ...testDb.collections, client: testDb.client };
-    const app = createApp(dependencies, { corsOrigins: ["http://localhost:3000"], trustProxyHops: 1, authConfig: fakeAuthConfig() });
+    const app = createApp(dependencies, { corsOrigins: ["http://localhost:3000"], trustProxyHops: 1, authConfig: fakeAuthConfig(), repositories: fakeCoreRepositories() });
 
     const res = await request(app)
       .post("/api/v1/user/book-slot")
@@ -543,6 +544,7 @@ describe("TS candidate (src/app.ts) full transaction-invariant proof", () => {
     return createApp(dependencies, {
       corsOrigins: ["http://localhost:3000"],
       trustProxyHops: 1,
+      repositories: fakeCoreRepositories(),
       authConfig: {
         jwtSecret: "test-only-secret",
         jwtResetPasswordSecret: "test-only-reset-secret",

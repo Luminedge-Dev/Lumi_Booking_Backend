@@ -22,6 +22,8 @@ delete process.env.EMAIL;
 delete process.env.APP_PASS;
 
 import { afterEach, describe, it } from "node:test";
+import { fakeCoreRepositories } from "../helpers/fake-core-repositories";
+import { usersBackedRepositories } from "../helpers/fake-users-repositories";
 import assert from "node:assert/strict";
 import request from "supertest";
 import bcrypt from "bcryptjs";
@@ -71,7 +73,7 @@ function appWith(usersCollection: FakeUsersCollection) {
     bookingMockCollection: throwingCollection("bookingMockCollection") as unknown as Collection<Document>,
     client: {} as MongoClient,
   };
-  return createApp(dependencies, { corsOrigins: ["http://localhost:3000"], trustProxyHops: 1, authConfig: fakeAuthConfig() });
+  return createApp(dependencies, { corsOrigins: ["http://localhost:3000"], trustProxyHops: 1, authConfig: fakeAuthConfig(), repositories: fakeCoreRepositories(usersBackedRepositories(usersCollection)) });
 }
 
 async function hash(password: string, rounds: number): Promise<string> {

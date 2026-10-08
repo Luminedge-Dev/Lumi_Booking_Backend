@@ -35,9 +35,18 @@ describe("Express request typing is centralized (architecture)", () => {
 
 describe("deferred-stack ban (architecture)", () => {
   it("Prisma stays inside the database layer; Better Auth runtime, QueryBuilder, and Lucia stay absent", () => {
+    // Stage 15: Prisma may live only in the database layer, the composition
+    // file that constructs the Prisma repositories, and the four migrated
+    // modules' repository files. Never in routes/controllers/services.
     const prismaOwners = new Set([
       path.normalize("app/database/prisma.ts"),
       path.normalize("app/database/transaction.ts"),
+      path.normalize("app/database/persistence-error.ts"),
+      path.normalize("app/runtime/core-repositories.ts"),
+      path.normalize("app/modules/auth/auth.repository.ts"),
+      path.normalize("app/modules/user/user.repository.ts"),
+      path.normalize("app/modules/course/course.repository.ts"),
+      path.normalize("app/modules/schedule/schedule.repository.ts"),
     ]);
     const offenders: string[] = [];
     const visit = (dir: string): void => {

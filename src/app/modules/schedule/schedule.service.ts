@@ -1,5 +1,5 @@
 import type { ScheduleRepository } from "./schedule.repository";
-import { normalizeIncomingSlot, parseCreateScheduleEntry } from "./schedule.validation";
+import { normalizeIncomingSlot, parseCreateScheduleEntry, toStorableSchedule } from "./schedule.validation";
 import { toScheduleDtoList } from "./schedule.mapper";
 import type {
   AdminListFilter,
@@ -37,15 +37,6 @@ export class ScheduleService {
         continue;
       }
 
-      // Read max slot ID before normalizing/checking timeSlots, matching legacy order.
-      const key = {
-        courseId: parsed.courseId,
-        startDate: parsed.startDate,
-        endDate: parsed.endDate,
-        testType: parsed.testType,
-      };
-      let nextId = await this.repository.findMaxSlotId(key);
-
       const incomingSlots = parsed.timeSlots.map(normalizeIncomingSlot);
 
       if (!incomingSlots.length) {
@@ -59,20 +50,35 @@ export class ScheduleService {
         continue;
       }
 
-      for (const slot of incomingSlots) {
-        nextId += 1;
-        const doc = {
+      // Stage 15: PostgreSQL cannot store every value Mongo accepted.
+      const storable = toStorableSchedule(parsed, incomingSlots);
+      if (!storable.ok) {
+        failed.push({
           courseId: parsed.courseId,
           startDate: parsed.startDate,
           endDate: parsed.endDate,
-          name: parsed.name,
-          testSystem: parsed.testSystem,
-          testType: parsed.testType ?? "",
-          status: parsed.status,
+          message: storable.message,
+          timestamp: nowIso,
+        });
+        continue;
+      }
+      const base = storable.value;
+
+      const key = {
+        courseId: base.courseId,
+        startDate: base.startDate,
+        endDate: base.endDate,
+        testType: base.testType,
+      };
+      let nextId = await this.repository.findMaxSlotId(key);
+
+      for (const slot of incomingSlots) {
+        nextId += 1;
+        await this.repository.insertSchedule({
+          ...base,
           timeSlots: [{ ...slot, slotId: String(nextId) }],
-          createdAt: nowIso,
-        };
-        await this.repository.insertSchedule(doc);
+          createdAt: new Date(nowIso),
+        });
         successful.push({
           courseId: parsed.courseId,
           startDate: parsed.startDate,
@@ -82,7 +88,6 @@ export class ScheduleService {
         });
       }
     }
-
     return { successful, failed };
   }
 
