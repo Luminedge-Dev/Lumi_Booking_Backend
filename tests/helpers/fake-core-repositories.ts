@@ -6,6 +6,7 @@
 // the real stage13-dev database (tests/postgres/*.postgres.ts) and against a
 // real ephemeral MongoDB reference (tests/parity/*.parity.ts).
 
+import type { BookingRepository } from "../../src/app/modules/booking/booking.repository";
 import type { CoreRepositories } from "../../src/app/runtime/core-repositories";
 import type { AuthRepository } from "../../src/app/modules/auth/auth.repository";
 import type { UserRepository } from "../../src/app/modules/user/user.repository";
@@ -201,6 +202,7 @@ export function fakeCoreRepositories(overrides: Partial<CoreRepositories> = {}):
     user: throwingRepository<UserRepository>("user"),
     course: throwingRepository<CourseRepository>("course"),
     schedule: throwingRepository<ScheduleRepository>("schedule"),
+    booking: throwingRepository<BookingRepository>("booking"),
     ...overrides,
   };
 }

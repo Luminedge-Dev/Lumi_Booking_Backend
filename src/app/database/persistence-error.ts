@@ -1,5 +1,6 @@
 import { Prisma } from "../../generated/prisma/client.js";
 import { measureDatabaseOperation } from "./query-timing";
+import { isTransactionConflict } from "./transaction";
 
 // Prisma/driver errors stop at the repository boundary. Anything that crosses
 // it is a PersistenceError whose message never carries SQL text, constraint
@@ -11,7 +12,11 @@ export class PersistenceError extends Error {
   constructor(
     readonly kind: PersistenceErrorKind,
     readonly operation: string,
-    readonly prismaCode?: string
+    readonly prismaCode?: string,
+    // True when a Serializable conflict (P2034, or raw-SQL P2010 caused by
+    // SQLSTATE 40001/40P01) survived the bounded retries. Callers map this
+    // to a contract status without inspecting Prisma internals.
+    readonly conflict: boolean = false
   ) {
     super(
       `Persistence failure (${kind}) during ${operation}${prismaCode ? ` [${prismaCode}]` : ""}`
@@ -64,6 +69,7 @@ export function translatePersistenceError(error: unknown, operation: string): un
   if (!isPrismaOrDriverError(error)) return error;
   const prismaCode = typeof (error as { code?: unknown }).code === "string" ? (error as { code: string }).code : undefined;
   if (isStatementTimeout(error)) return new PersistenceError("TIMEOUT", operation, prismaCode);
+  if (isTransactionConflict(error)) return new PersistenceError("UNEXPECTED", operation, prismaCode, true);
   if (error instanceof Prisma.PrismaClientInitializationError || prismaCode === "P1001" || prismaCode === "P1002" || prismaCode === "P1017") {
     return new PersistenceError("UNAVAILABLE", operation, prismaCode);
   }

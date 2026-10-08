@@ -77,6 +77,37 @@ export function createUserRouter(controller: UserController, authMiddleware: Aut
   // verifyAdmin already calls verifyToken internally; chaining both would authenticate twice.
   router.get("/users/with-profile-request", authMiddleware.verifyAdmin, controller.listProfileEditRequests);
 
+  router.put(
+    "/user/status/:userId",
+    authMiddleware.verifyAdmin,
+    validateUserIdParam({ message: "Invalid user ID format" }),
+    controller.updateStatus
+  );
+  router.put(
+    "/user/block/:userId",
+    authMiddleware.verifyAdmin,
+    validateUserIdParam({ message: "Invalid user ID format" }),
+    controller.updateBlock
+  );
+  router.put(
+    "/user/approve-profile-edit/:userId",
+    authMiddleware.verifyAdmin,
+    validateUserIdParam({ success: false, message: "Invalid user ID" }),
+    controller.approveProfileEdit
+  );
+  router.put(
+    "/user/update-multiple/:userId",
+    authMiddleware.verifyAdmin,
+    validateUserIdParam({ success: false, message: "Invalid user ID" }),
+    controller.grantMocks
+  );
+  router.put(
+    "/user/update-one/:userId",
+    authMiddleware.verifyAdmin,
+    validateUserIdParam({ success: false, message: "Invalid user ID" }),
+    controller.adjustMock
+  );
+
   // Must be last: catches /user/:userId only after specific /user/* routes.
   router.get(
     "/user/:userId",

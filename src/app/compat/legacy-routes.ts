@@ -6,15 +6,20 @@ import statsRoutes from "../../../routes/stats.routes";
 import scheduleRoutes from "../../../routes/schedule.routes";
 import type { AppDependencies } from "../database/database.types";
 
-export function mountLegacyRoutesBeforeAuth(router: Router, dependencies: AppDependencies): void {
+// Stage 16: native Booking owns every booking path except POST /send-reminder
+// (Stage 19 notifications). The legacy booking router stays mounted AFTER the
+// native one: its migrated handlers are shadowed (kept for rollback), and
+// /send-reminder remains live here with the Mongo-backed legacy auth.
+// The legacy factory shares a module-level Router(), so call this exactly once.
+export function mountLegacyBookingRoutes(router: Router, dependencies: AppDependencies): void {
   const { usersCollection, coursesCollection, schedulesCollection, bookingMockCollection, client } = dependencies;
 
-  // Booking routes first so /user/bookings/:userId matches before /user/:userId.
   router.use(bookingRoutes({ usersCollection, schedulesCollection, bookingMockCollection, coursesCollection, client }));
 }
 
-// Mounted after native User: its migrated paths shadow the matching legacy
-// handlers; the rest (admin/users, user/all, PUT mutations) stay live here.
+// Mounted after native User: its migrated paths (including Stage 16B admin PUT
+// mutations) shadow the matching legacy handlers; GET /admin/users and
+// GET /user/all stay live here (B8).
 export function mountLegacyUserAndMidRoutes(router: Router, dependencies: AppDependencies): void {
   const { usersCollection, bookingMockCollection, client } = dependencies;
 

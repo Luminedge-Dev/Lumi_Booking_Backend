@@ -2,7 +2,7 @@
 
 **Status:** ACTIVE — 2026-10-08
 **Scope:** this repository only (`Lumi_Booking_Backend/`).
-**Stage:** Stage 12.5 — COMPLETE 2026-10-07 (D-034) + Stage 13 — COMPLETE 2026-10-07 (D-036, stage13-dev only) + Stage 14 — COMPLETE 2026-10-08 (D-037, read-only Mongo → stage13-dev ETL + reconciliation; `scripts/migration/stage14/`) + Stage 15 - COMPLETE 2026-10-08 (D-038, stage13-dev only; Auth/User/Course/Schedule repositories on PostgreSQL via Prisma; Booking/Feedback/Stats/compat still MongoDB) + Stage 16 - NEXT (planning only; not started)
+**Stage:** Stage 12.5 — COMPLETE 2026-10-07 (D-034) + Stage 13 — COMPLETE 2026-10-07 (D-036, stage13-dev only) + Stage 14 — COMPLETE 2026-10-08 (D-037, read-only Mongo → stage13-dev ETL + reconciliation; `scripts/migration/stage14/`) + Stage 15 - COMPLETE 2026-10-08 (D-038, stage13-dev only; Auth/User/Course/Schedule repositories on PostgreSQL via Prisma) + Stage 16 - COMPLETE 2026-10-08 (D-039, stage13-dev only; Booking + Home teacher assignment on PostgreSQL) + Stage 16B - COMPLETE 2026-10-08 (D-040, stage13-dev only; five admin User PUTs on PostgreSQL; B1/B2 closed; B8 listing GETs still Mongo). Feedback/TRF/Stats/reminders/legacy auth remain MongoDB. NEXT: Stage 17 rehearsal only.
 **Target:** D-032 — PostgreSQL + Prisma ORM 7.10.0 foundation is local. HYBRID since Stage 15 (D-038): the TS candidate's Auth/User/Course/Schedule repositories use PostgreSQL (stage13-dev); Booking, Feedback, Stats and legacy compat routes use MongoDB. Existing production remains MongoDB and is untouched.
 **Deployment (D-035 ACTIVE):** existing production (`luminedge-server` + MongoDB) stays live and untouched. Stage 13+ work targets local/new staging infrastructure — NEVER old-production conversion. Do not deploy this backend over the current production project; do not Preview against it.
 
@@ -21,7 +21,8 @@ stage13-dev only. MongoDB remains the
 current production source of truth until the controlled Stage 22 cutover;
 Stage 17 is rehearsal/readiness only. Interactive
 $transaction commit, rollback, and Serializable isolation were proven on
-stage13-dev in Stage 13. Booking workflow designs remain Stage 16.
+stage13-dev in Stage 13. Booking workflows were migrated in Stage 16 (D-039);
+credit grants and account-state PUTs in Stage 16B (D-040). Stage 17 is next.
 
 ## 1. Workspace context (not tracked by this repo's Git)
 
@@ -44,8 +45,10 @@ cite them assume the full workspace checkout. See `README.md` for the read order
 CURRENT:   Express 4, CommonJS index.js → app.js, native MongoDB, JWT + bcrypt, Vercel.
            TS candidate src/main.ts / src/handler.ts → runtime/bootstrap.ts → src/app.ts
            → router/index.ts (Auth/User/Course/Schedule, secured /schedule/:userId) — implemented + locally verified, NOT activated in existing production (intentional under D-035).
-PERSISTENCE (Stage 15, D-038): Auth/User/Course/Schedule repositories -> PostgreSQL via Prisma 7.10 (stage13-dev only, ports + Prisma*Repository, lazy client).
-           Booking/Feedback/Stats/legacy compat (+ legacy auth middleware) -> MongoDB native driver. No cross-database atomicity.
+PERSISTENCE (Stages 15–16B): Auth/User/Course/Schedule/Booking + credit grants and
+           account-state PUTs -> PostgreSQL via Prisma 7.10 (stage13-dev only).
+           Feedback/Stats/listing GETs (B8)/legacy compat (+ legacy auth middleware) -> MongoDB.
+           No cross-database atomicity.
            Stage 14 quarantined users/schedules are absent from PostgreSQL by design (no fallback/repair).
 TARGET:    PostgreSQL + Prisma ORM 7 + Neon is the full target (Stage 16+ booking, Stage 22 cutover).
 LATER:     Better Auth (Stage 18). NEVER: Mongoose (superseded).

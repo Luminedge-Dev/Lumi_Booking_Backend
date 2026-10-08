@@ -3,6 +3,7 @@ import type { PrismaClient } from "../../../generated/prisma/client.js";
 import { getPrismaClient } from "../../database/prisma";
 import { runPersistence } from "../../database/persistence-error";
 import { toCanonicalObjectIdHex } from "../../shared/utils/object-id";
+import { EMAIL_LOCK_SEED, normalizeEmailIdentity } from "../../shared/email-identity";
 import { UserEmailConflictError } from "./auth.types";
 import type { AuthAccountStateProjection, AuthUserRecord, NewUserRecord, PasswordUpdateExtra } from "./auth.types";
 
@@ -54,9 +55,6 @@ const AUTH_SELECT = {
   passwordChangedAt: true,
   needPasswordChange: true,
 } as const;
-
-// Advisory-lock namespace for per-email registration serialization.
-const EMAIL_LOCK_SEED = 15;
 
 export class PrismaAuthRepository implements AuthRepository {
   constructor(private readonly getClient: () => PrismaClient = getPrismaClient) {}
@@ -119,7 +117,8 @@ export class PrismaAuthRepository implements AuthRepository {
   async insertUser(doc: NewUserRecord): Promise<string> {
     return runPersistence({ table: "users", operation: "auth.insert_user" }, async () => {
       await this.getClient().$transaction(async (tx) => {
-        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${doc.email}::text, ${EMAIL_LOCK_SEED}::bigint))`;
+        const lockKey = normalizeEmailIdentity(doc.email);
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}::text, ${EMAIL_LOCK_SEED}::bigint))`;
         const existing = await tx.user.findFirst({ where: { email: doc.email }, select: { id: true } });
         if (existing) throw new UserEmailConflictError();
         await tx.user.create({

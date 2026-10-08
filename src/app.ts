@@ -12,12 +12,17 @@ import { requestIdMiddleware } from "./app/middleware/request-id";
 import { requestObservability } from "./app/middleware/request-observability";
 import { createApiRouter } from "./app/router";
 import type { CoreRepositories } from "./app/runtime/core-repositories";
+import type { BookingNotifier } from "./app/modules/booking/booking.service";
+import type { UserNotifier } from "./app/modules/user/user.service";
 
 export interface AppOptions {
   corsOrigins: readonly string[];
   trustProxyHops: number;
   authConfig: AuthConfig;
   repositories: CoreRepositories;
+  // Optional post-commit booking notifications; defaults to the legacy e-mail templates.
+  bookingNotifier?: BookingNotifier;
+  userNotifier?: UserNotifier;
 }
 
 export function createApp(dependencies: AppDependencies, options: AppOptions): Application {

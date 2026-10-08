@@ -1,5 +1,6 @@
-// Stage 15 hybrid persistence map (D-038): Auth/User/Course/Schedule are on
-// PostgreSQL via Prisma in the TS candidate; everything else stays on Mongo.
+// Stage 15/16 hybrid persistence map (D-038/D-039): Auth/User/Course/Schedule
+// (Stage 15) and Booking + teacher assignment (Stage 16) are on PostgreSQL via
+// Prisma in the TS candidate; everything else stays on Mongo.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -9,7 +10,7 @@ import { PrismaCourseRepository } from "../../src/app/modules/course/course.repo
 
 const root = path.resolve(__dirname, "../..");
 const read = (rel: string) => fs.readFileSync(path.join(root, rel), "utf8");
-const MIGRATED = ["auth", "user", "course", "schedule"] as const;
+const MIGRATED = ["auth", "user", "course", "schedule", "booking"] as const;
 
 function moduleFiles(name: string): string[] {
   const dir = path.join(root, "src/app/modules", name);
@@ -47,13 +48,13 @@ describe("Stage 15 persistence map (architecture)", () => {
     }
   });
 
-  it("the router wires Auth/User/Course/Schedule to the injected core repositories, not to Mongo collections", () => {
+  it("the router wires Auth/User/Course/Schedule/Booking to the injected core repositories, not to Mongo collections", () => {
     const source = read("src/app/router/index.ts");
     for (const name of MIGRATED) {
       assert.match(source, new RegExp(`options\\.repositories\\.${name}`), `${name} repository injection`);
     }
-    const nativeFactories = source.match(/create(Auth|User|Course|Schedule)Module\(\{[\s\S]*?\}\)/g) ?? [];
-    assert.equal(nativeFactories.length >= 4, true);
+    const nativeFactories = source.match(/create(Auth|User|Course|Schedule|Booking)Module\(\{[\s\S]*?\}\)/g) ?? [];
+    assert.equal(nativeFactories.length >= 5, true);
     for (const call of nativeFactories) {
       assert.doesNotMatch(call, /Collection\b/, `native module wiring must not receive a Mongo collection: ${call.slice(0, 60)}`);
     }
@@ -79,7 +80,7 @@ describe("Stage 15 persistence map (architecture)", () => {
     delete process.env.NEON_DIRECT_URL;
     try {
       const repositories = createCoreRepositories();
-      assert.deepEqual(Object.keys(repositories).sort(), ["auth", "course", "schedule", "user"]);
+      assert.deepEqual(Object.keys(repositories).sort(), ["auth", "booking", "course", "schedule", "user"]);
     } finally {
       if (saved.url !== undefined) process.env.NEON_DB_URL = saved.url;
       if (saved.direct !== undefined) process.env.NEON_DIRECT_URL = saved.direct;

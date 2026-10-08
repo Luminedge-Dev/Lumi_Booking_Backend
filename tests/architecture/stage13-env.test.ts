@@ -90,6 +90,31 @@ describe("transaction conflict classification (architecture)", () => {
     assert.equal(isTransactionConflict(new Error("P2034")), false);
   });
 
+  it("recognizes a raw-SQL serialization failure (P2010 + 40001 cause) and nothing broader", () => {
+    const raw = (cause: Record<string, unknown>) => ({ code: "P2010", meta: { driverAdapterError: { cause } } });
+    assert.equal(isTransactionConflict(raw({ kind: "TransactionWriteConflict", originalCode: "40001" })), true);
+    assert.equal(isTransactionConflict(raw({ originalCode: "40P01" })), true);
+    assert.equal(isTransactionConflict(raw({ kind: "UniqueConstraintViolation", originalCode: "23505" })), false);
+    assert.equal(isTransactionConflict({ code: "P2010", meta: {} }), false);
+    assert.equal(isTransactionConflict({ code: "P2010" }), false);
+  });
+
+  it("passes bounded maxWait/timeout through only when given, and rejects out-of-range values", async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const execute = async (_fn: unknown, options: Record<string, unknown>) => {
+      seen.push(options);
+      return "ok";
+    };
+    await runSerializableTransaction(async () => "x", { execute });
+    await runSerializableTransaction(async () => "x", { execute, maxWaitMs: 10000, timeoutMs: 15000 });
+    assert.deepEqual(seen[0], { isolationLevel: "Serializable" });
+    assert.deepEqual(seen[1], { isolationLevel: "Serializable", maxWait: 10000, timeout: 15000 });
+    await assert.rejects(() => runSerializableTransaction(async () => "x", { execute, maxWaitMs: 0 }), /maxWaitMs/);
+    await assert.rejects(() => runSerializableTransaction(async () => "x", { execute, maxWaitMs: 30001 }), /maxWaitMs/);
+    await assert.rejects(() => runSerializableTransaction(async () => "x", { execute, timeoutMs: 60001 }), /timeoutMs/);
+    await assert.rejects(() => runSerializableTransaction(async () => "x", { execute, timeoutMs: 1.5 }), /timeoutMs/);
+  });
+
   it("bounds Serializable retries and does not retry other errors", async () => {
     let conflicts = 0;
     const value = await runSerializableTransaction(async () => "ok", {

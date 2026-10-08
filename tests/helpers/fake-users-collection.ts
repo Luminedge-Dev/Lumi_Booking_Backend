@@ -60,12 +60,39 @@ export class FakeUsersCollection {
 
   async updateOne(
     filter: Record<string, unknown>,
-    update: { $set: Record<string, unknown> }
+    update: {
+      $set?: Record<string, unknown>;
+      $inc?: Record<string, number>;
+      $push?: Record<string, unknown>;
+    }
   ): Promise<{ matchedCount: number; modifiedCount: number }> {
     const doc = this.docs.find((d) => this.matches(d, filter));
     if (!doc) return { matchedCount: 0, modifiedCount: 0 };
-    Object.assign(doc, update.$set);
-    return { matchedCount: 1, modifiedCount: 1 };
+    let modified = false;
+    if (update.$set) {
+      for (const [key, value] of Object.entries(update.$set)) {
+        if (doc[key] !== value) modified = true;
+        doc[key] = value;
+      }
+    }
+    if (update.$inc) {
+      for (const [key, value] of Object.entries(update.$inc)) {
+        doc[key] = (Number(doc[key]) || 0) + value;
+        modified = true;
+      }
+    }
+    if (update.$push) {
+      for (const [key, value] of Object.entries(update.$push)) {
+        if (!Array.isArray(doc[key])) doc[key] = [];
+        const each =
+          value && typeof value === "object" && "$each" in (value as Record<string, unknown>)
+            ? ((value as { $each: unknown[] }).$each ?? [])
+            : [value];
+        (doc[key] as unknown[]).push(...each);
+        modified = true;
+      }
+    }
+    return { matchedCount: 1, modifiedCount: modified ? 1 : 0 };
   }
 
   // Zero-arg form (existing, unchanged behavior): returns the raw backing

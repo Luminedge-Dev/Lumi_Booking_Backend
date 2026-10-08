@@ -82,3 +82,75 @@ export interface ParsedProfileEditInput {
   userId: string;
   note: unknown;
 }
+
+export class UserHttpError extends Error {
+  constructor(
+    readonly status: number,
+    readonly body: Record<string, unknown>
+  ) {
+    super(typeof body.message === "string" ? body.message : "UserHttpError");
+    this.name = "UserHttpError";
+  }
+}
+
+export const ALLOWED_USER_STATUSES = ["active", "checked", "completed", "blocked"] as const;
+export type AllowedUserStatus = (typeof ALLOWED_USER_STATUSES)[number];
+
+export const CONTRACTED_ALLOCATION_FIELDS = [
+  "transactionId",
+  "mock",
+  "mockType",
+  "testType",
+  "testSystem",
+  "mrValidation",
+  "mrValidationExpiry",
+  "createdAt",
+  "updatedAt",
+  "emailReminderSent",
+] as const;
+
+export interface MockGrantEntry {
+  transactionId?: unknown;
+  mock: number;
+  mockType?: unknown;
+  testType?: unknown;
+  testSystem?: unknown;
+  mrValidation?: unknown;
+  mrValidationExpiry?: unknown;
+  createdAt: Date;
+  updatedAt?: unknown;
+  emailReminderSent?: unknown;
+}
+
+export type GrantOutcome =
+  | { kind: "not_found" }
+  | { kind: "all_duplicates" }
+  | { kind: "overflow" }
+  | { kind: "granted"; addedMocks: MockGrantEntry[]; name: string; email: string };
+
+export type AdjustOutcome =
+  | { kind: "not_found" }
+  | { kind: "user_or_mocks_not_found" }
+  | { kind: "mock_not_found" }
+  | { kind: "ambiguous" }
+  | { kind: "total_below_zero" }
+  | { kind: "overflow" }
+  | { kind: "updated"; updatedMock: Record<string, unknown> };
+
+export type StatusOutcome =
+  | { kind: "not_found" }
+  | { kind: "updated"; notifyCompleted: { name: string; email: string } | null };
+
+export type BlockOutcome = { kind: "not_found" } | { kind: "updated"; isDeleted: boolean };
+
+export type ApproveOutcome = { kind: "not_found" } | { kind: "unchanged" } | { kind: "email_in_use" } | { kind: "updated" };
+
+export interface ApprovePatch {
+  name?: unknown;
+  email?: string;
+  phone?: unknown;
+  passportId?: unknown;
+  transactionId?: unknown;
+}
+
+export type UserFaultHook = (point: string) => void | Promise<void>;

@@ -1,6 +1,7 @@
 import type { Request, Response } from "express";
 import { logger } from "../../shared/logger/logger";
 import type { UserService } from "./user.service";
+import { UserHttpError } from "./user.types";
 import { isStorableNote, parseRequestProfileEditBody } from "./user.validation";
 
 export class UserController {
@@ -74,6 +75,55 @@ export class UserController {
     } catch (err) {
       logger.error("user_profile_edit_list_error", { error: (err as Error)?.message });
       res.status(500).json({ success: false, message: "Server error" });
+    }
+  };
+
+  private respond(res: Response, error: unknown, event: string, generic: Record<string, unknown>): void {
+    if (error instanceof UserHttpError) {
+      res.status(error.status).json(error.body);
+      return;
+    }
+    logger.error(event, { error: (error as Error)?.message });
+    res.status(500).json(generic);
+  }
+
+  grantMocks = async (req: Request, res: Response): Promise<void> => {
+    try {
+      res.json(await this.userService.grantMocks(req.params.userId, req.body));
+    } catch (error) {
+      this.respond(res, error, "user_grant_mocks_error", { success: false, message: "Server error" });
+    }
+  };
+
+  adjustMock = async (req: Request, res: Response): Promise<void> => {
+    try {
+      res.json(await this.userService.adjustMock(req.params.userId, req.body));
+    } catch (error) {
+      this.respond(res, error, "user_adjust_mock_error", { success: false, message: "Server error" });
+    }
+  };
+
+  updateStatus = async (req: Request, res: Response): Promise<void> => {
+    try {
+      res.json(await this.userService.updateStatus(req.params.userId, req.body));
+    } catch (error) {
+      this.respond(res, error, "user_update_status_error", { message: "Error updating user status." });
+    }
+  };
+
+  updateBlock = async (req: Request, res: Response): Promise<void> => {
+    try {
+      res.json(await this.userService.updateBlock(req.params.userId, req.body));
+    } catch (error) {
+      this.respond(res, error, "user_update_block_error", { message: "Error updating user status" });
+    }
+  };
+
+  approveProfileEdit = async (req: Request, res: Response): Promise<void> => {
+    try {
+      res.status(200).json(await this.userService.approveProfileEdit(req.params.userId, req.body));
+    } catch (error) {
+      this.respond(res, error, "user_approve_profile_error", { success: false, message: "Server error" });
     }
   };
 }

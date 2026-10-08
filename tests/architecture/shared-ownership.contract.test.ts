@@ -47,6 +47,7 @@ describe("deferred-stack ban (architecture)", () => {
       path.normalize("app/modules/user/user.repository.ts"),
       path.normalize("app/modules/course/course.repository.ts"),
       path.normalize("app/modules/schedule/schedule.repository.ts"),
+      path.normalize("app/modules/booking/booking.repository.ts"),
     ]);
     const offenders: string[] = [];
     const visit = (dir: string): void => {

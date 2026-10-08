@@ -86,3 +86,49 @@ describe("UserService.listProfileEditRequests (admin-only list, no actor compari
     assert.equal(results[0].name, "A");
   });
 });
+
+describe("UserService admin mutations (P1 / D9)", () => {
+  it("P1 mixed-case collision throws 409 and leaves the target email", async () => {
+    const owner = new ObjectId();
+    const target = new ObjectId();
+    const service = makeService([
+      { _id: owner, email: "Member@Example.com", name: "A" },
+      { _id: target, email: "other@example.test", name: "B", profileEditNote: "please" },
+    ]);
+    await assert.rejects(
+      () => service.approveProfileEdit(target.toHexString(), { email: "member@example.com", name: "Hacked" }),
+      (error: { status?: number; body?: { message?: string } }) => {
+        assert.equal(error.status, 409);
+        assert.equal(error.body?.message, "Email address already in use");
+        return true;
+      }
+    );
+    const still = await service.getProfile(target.toHexString());
+    assert.equal(still?.email, "other@example.test");
+    assert.equal(still?.name, "B");
+  });
+
+  it("D9 ambiguous trimmed transaction IDs throw 409", async () => {
+    const id = new ObjectId();
+    const service = makeService([
+      {
+        _id: id,
+        email: "u@example.test",
+        mock: 4,
+        totalMock: 4,
+        mocks: [
+          { transactionId: "MR-1", mock: 2 },
+          { transactionId: " MR-1 ", mock: 2 },
+        ],
+      },
+    ]);
+    await assert.rejects(
+      () => service.adjustMock(id.toHexString(), { transactionId: "MR-1", updatedMock: { mock: 1, mrValidation: "1 day" } }),
+      (error: { status?: number; body?: { message?: string } }) => {
+        assert.equal(error.status, 409);
+        assert.equal(error.body?.message, "Ambiguous transaction ID");
+        return true;
+      }
+    );
+  });
+});
