@@ -1,13 +1,6 @@
-// One-off, read-only DB inspector for the Home-based eligibility rule.
-// Prints the exact strings we must match: course names, any existing
-// homeBasedSystems values, and the distinct "system" values found on real
-// bookings/mocks (so we know whether the field is testSystem or testType and
-// the exact spelling, e.g. "Computer-Based" vs "Computer-delivered").
-//
-// Usage (from repo root, with MONGODB_URI set in .env or the environment):
-//   node scripts/inspect-courses.js
 require("dotenv").config();
 const { MongoClient } = require("mongodb");
+const { databaseName } = require("../config/databaseName");
 
 (async () => {
   if (!process.env.MONGODB_URI) {
@@ -17,7 +10,7 @@ const { MongoClient } = require("mongodb");
   const client = new MongoClient(process.env.MONGODB_URI);
   try {
     await client.connect();
-    const db = client.db("luminedge");
+    const db = client.db(databaseName());
 
     console.log("\n=== courses (name + homeBasedSystems) ===");
     const courses = await db
