@@ -128,12 +128,16 @@ export function createReadOnlyCollection(name: SourceEntity, collection: FindOnl
 const MONGO_DB_NAME = "luminedge";
 
 /**
- * Opens a client against the SOURCE database. Never prints the URI. The client
+ * Opens a client against a named database. Never prints the URI. The client
  * is private to this closure; callers receive only ReadOnlyCollection views.
+ * `connectReadOnlySource` keeps the Stage 14 database name.
  */
-export async function connectReadOnlySource(uri: string): Promise<ReadOnlySource> {
+export async function connectReadOnlyDatabase(uri: string, databaseName: string): Promise<ReadOnlySource> {
+  if (databaseName.length === 0 || /[/\s]/.test(databaseName)) {
+    throw new Error("database name is invalid");
+  }
   const client = new MongoClient(uri, {
-    appName: "luminedge-stage14-etl-readonly",
+    appName: databaseName === MONGO_DB_NAME ? "luminedge-stage14-etl-readonly" : "luminedge-stage17-local-readonly",
     retryWrites: false,
     serverSelectionTimeoutMS: 10_000,
     connectTimeoutMS: 10_000,
@@ -141,9 +145,17 @@ export async function connectReadOnlySource(uri: string): Promise<ReadOnlySource
     maxPoolSize: 2,
   });
   await client.connect();
-  const db = client.db(MONGO_DB_NAME);
+  const db = client.db(databaseName);
   return {
     collection: (name) => createReadOnlyCollection(name, db.collection(name) as unknown as FindOnlyCollection),
     close: () => client.close(),
   };
+}
+
+/**
+ * Opens a client against the Stage 14 SOURCE database (`luminedge`).
+ * Never prints the URI.
+ */
+export async function connectReadOnlySource(uri: string): Promise<ReadOnlySource> {
+  return connectReadOnlyDatabase(uri, MONGO_DB_NAME);
 }

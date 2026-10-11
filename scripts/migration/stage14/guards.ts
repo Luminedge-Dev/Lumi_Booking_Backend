@@ -5,6 +5,11 @@
 // the Neon compute endpoint of branch stage13-dev (the same pin Stage 13's own
 // live test uses) and refuses anything that looks like production.
 //
+// The TypeScript unique symbol is not the authorization check. verifyStage13Target
+// is the only function that adds an object to the runtime brand set. A cast or a
+// copied property bag is not a verified target. This module does not mint a
+// Stage 17 rehearsal capability.
+//
 // Error messages never include a connection string.
 
 import { classifyDatabaseUrl, normalizedEndpointId } from "../../../src/app/database/neon-target";
@@ -27,6 +32,12 @@ export interface VerifiedTarget {
   readonly [verifiedBrand]: true;
   readonly branch: "stage13-dev";
   readonly endpointId: string;
+}
+
+const stage13Brands = new WeakSet<object>();
+
+export function isVerifiedStage13Target(value: unknown): value is VerifiedTarget {
+  return typeof value === "object" && value !== null && stage13Brands.has(value);
 }
 
 export interface TargetEnv {
@@ -59,5 +70,7 @@ export function verifyStage13Target(env: TargetEnv): VerifiedTarget {
   if (runtimeId !== directId || runtimeId !== STAGE13_DEV_ENDPOINT_ID) {
     throw new StopError("endpoint pair is not the approved stage13-dev compute.");
   }
-  return { branch: "stage13-dev", endpointId: runtimeId } as unknown as VerifiedTarget;
+  const target = Object.freeze({ branch: "stage13-dev" as const, endpointId: runtimeId });
+  stage13Brands.add(target);
+  return target as unknown as VerifiedTarget;
 }

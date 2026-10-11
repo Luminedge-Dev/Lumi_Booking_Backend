@@ -44,6 +44,10 @@ export interface PipelineOptions {
   log?: (message: string) => void;
   /** Called after every committed (or dry-run-validated) batch. */
   onCheckpoint?: (info: { entity: SourceEntity; token: CursorToken; docs: number }) => void;
+  /** Called with the extracted document before it is transformed. */
+  onSourceDocument?: (info: { entity: SourceEntity; raw: RawDoc }) => void;
+  /** Observes each extracted root after it is transformed. Must not mutate the document or the result. */
+  onDocument?: (info: { entity: SourceEntity; raw: RawDoc; result: AggregateResult }) => void;
 }
 
 export interface SourceCounts {
@@ -157,9 +161,11 @@ export async function runPipeline(options: PipelineOptions): Promise<PipelineRes
         if (options.limitPerEntity !== undefined && docsSeen >= options.limitPerEntity) break;
         docsSeen += 1;
         docsInBatch += 1;
+        options.onSourceDocument?.({ entity, raw });
         const result = transform(raw, state);
         quarantine.push(...ledger.record(result));
         for (const finding of result.findings) state.findings.add(finding.code, finding.scope, finding.count);
+        options.onDocument?.({ entity, raw, result });
         if (resumeAfter && !isAfterToken(raw._id, resumeAfter)) continue;
         mergeRows(rows, result.rows);
         const hex = canonicalHexId(raw._id);

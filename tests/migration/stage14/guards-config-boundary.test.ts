@@ -7,7 +7,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { parseArgs } from "../../../scripts/migration/stage14/config";
-import { STAGE13_DEV_ENDPOINT_ID, StopError, verifyStage13Target } from "../../../scripts/migration/stage14/guards";
+import { STAGE13_DEV_ENDPOINT_ID, StopError, isVerifiedStage13Target, verifyStage13Target } from "../../../scripts/migration/stage14/guards";
 
 const POOLED = `postgresql://user:SECRETPW@${STAGE13_DEV_ENDPOINT_ID}-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require`;
 const DIRECT = `postgresql://user:SECRETPW@${STAGE13_DEV_ENDPOINT_ID}.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require`;
@@ -29,6 +29,8 @@ describe("Stage 14 write-target guard", () => {
     const target = verifyStage13Target({ NEON_DB_URL: POOLED, NEON_DIRECT_URL: DIRECT });
     assert.equal(target.branch, "stage13-dev");
     assert.equal(target.endpointId, STAGE13_DEV_ENDPOINT_ID);
+    assert.equal(isVerifiedStage13Target(target), true);
+    assert.equal(isVerifiedStage13Target({ branch: target.branch, endpointId: target.endpointId }), false);
   });
 
   it("refuses a production endpoint, a missing URL, swapped roles, a non-Neon host, a wrong database and a different endpoint", () => {

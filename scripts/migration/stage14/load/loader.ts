@@ -14,7 +14,7 @@
 import type { PrismaClient } from "../../../../src/generated/prisma/client.js";
 import type { Row, SourceEntity, TableName } from "../common";
 import type { VerifiedTarget } from "../guards";
-import { StopError } from "../guards";
+import { STAGE13_DEV_ENDPOINT_ID, StopError, isVerifiedStage13Target } from "../guards";
 import type { CommitBatch, RowSink } from "./sink";
 
 type Delegate = {
@@ -98,8 +98,12 @@ export interface LoaderOptions {
 }
 
 export function createPrismaSink(prisma: PrismaClient, target: VerifiedTarget, options: LoaderOptions = {}): RowSink {
-  // `target` is a capability: it can only be produced by verifyStage13Target().
-  if (!target) throw new StopError("a verified stage13-dev target is required to load.");
+  // Runtime brand from verifyStage13Target(). Property shape, a type cast, and
+  // Stage 17 rehearsal facts are not this capability. Rehearsal write authority
+  // stays unavailable until Slice F attests Neon branch metadata and the connection.
+  if (!isVerifiedStage13Target(target) || target.branch !== "stage13-dev" || target.endpointId !== STAGE13_DEV_ENDPOINT_ID) {
+    throw new StopError("a verified stage13-dev target is required to load.");
+  }
   const chunk = options.insertChunkSize ?? 400;
 
   return {
