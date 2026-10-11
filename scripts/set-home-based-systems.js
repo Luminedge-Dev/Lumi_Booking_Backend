@@ -1,23 +1,7 @@
-// One-off migration: set the per-course Home-eligible test systems.
-//
-// Semantics enforced in routes/booking.routes.js:
-//   - field absent            => Home allowed for any system (default)
-//   - present, system listed  => allowed
-//   - present, [] or missing  => blocked (empty list blocks every system)
-//
-// IMPORTANT: run scripts/inspect-courses.js FIRST and confirm the real course
-// names + system spelling. Adjust RULES below to match your data exactly, then
-// run:  node scripts/set-home-based-systems.js
-// Dry run (no writes):  node scripts/set-home-based-systems.js --dry
 require("dotenv").config();
 const { MongoClient } = require("mongodb");
+const { databaseName } = require("../config/databaseName");
 
-// Course name (matched case-insensitively, trimmed, exact) -> allowed Home systems.
-// Names verified against the live `courses` collection via inspect-courses.js.
-// The PTE course doc is named "Pearson PTE" (not "PTE"); bookings post `name`
-// as one of ["GRE","IELTS","Pearson PTE","TOEFL"], which the backend looks up
-// against `courses.name`. The unused "IELTS Computer Based" doc is intentionally
-// left untouched — no booking references it, so enforcement never reaches it.
 const RULES = [
   { name: "IELTS", homeBasedSystems: ["Computer-Based"] },
   { name: "Pearson PTE", homeBasedSystems: ["Computer-Based"] },
@@ -36,7 +20,7 @@ const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const client = new MongoClient(process.env.MONGODB_URI);
   try {
     await client.connect();
-    const courses = client.db("luminedge").collection("courses");
+    const courses = client.db(databaseName()).collection("courses");
 
     for (const rule of RULES) {
       const filter = {

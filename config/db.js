@@ -1,4 +1,26 @@
+const dns = require("dns");
 const { MongoClient } = require("mongodb");
+
+const LOOPBACK_DNS = new Set(["127.0.0.1", "::1"]);
+
+// Node's c-ares resolver on Windows can ignore the adapter DNS (here
+// 8.8.8.8 / 1.1.1.1) and fall back to 127.0.0.1. Nothing listens on that
+// port, so a mongodb+srv URI dies in startup with querySrv ECONNREFUSED
+// before Atlas is ever contacted. nslookup still works because it uses the
+// Windows DNS client. Only replace the resolver when every server c-ares
+// reports is loopback, so a normal host is left alone.
+function repairUnreachableSrvResolver() {
+  const servers = dns.getServers().map((server) => server.replace(/%.+$/, ""));
+  if (servers.length === 0 || !servers.every((server) => LOOPBACK_DNS.has(server))) {
+    return;
+  }
+  dns.setServers(["8.8.8.8", "1.1.1.1"]);
+  console.warn(
+    "DNS resolver was loopback-only and refusing SRV lookups; using 8.8.8.8 and 1.1.1.1."
+  );
+}
+
+repairUnreachableSrvResolver();
 
 // Serverless-tuned so a bad connection fails fast (well under Vercel's hard
 // 10s function budget) instead of hanging on the driver's defaults
@@ -34,9 +56,11 @@ client.on("topologyClosed", () => { isHealthy = false; });
 client.on("serverHeartbeatFailed", () => { isHealthy = false; });
 client.on("connectionPoolCleared", () => { isHealthy = false; });
 
+const { databaseName } = require("./databaseName");
+
 async function connectDB() {
   await client.connect();
-  db = client.db("luminedge");
+  db = client.db(databaseName());
   isHealthy = true;
   return db;
 }
@@ -68,4 +92,4 @@ function getCollections() {
   };
 }
 
-module.exports = { client, connectDB, getCollections, ensureHealthy, MONGO_CLIENT_OPTIONS };
+module.exports = { client, connectDB, getCollections, ensureHealthy, databaseName, MONGO_CLIENT_OPTIONS };

@@ -229,11 +229,16 @@ module.exports = ({ usersCollection }) => {
           if (!user || status.toLowerCase() !== "completed") return;
 
           const safeName = sanitizeHtml(user.name || "Student", { allowedTags: [], allowedAttributes: {} });
+          const portalUrl = (process.env.FRONTEND_URL || "").trim().replace(/\/$/, "");
+          const safePortalUrl = /^https?:\/\//i.test(portalUrl) ? portalUrl.replace(/[<>"']/g, "") : "";
+          const portalSentence = safePortalUrl
+            ? `You can now log in and book your mock tests conveniently at <a href="${safePortalUrl}">${safePortalUrl}</a>.`
+            : "You can now log in and book your mock tests conveniently through the portal.";
           const subject = "Your Account is Verified: Start Booking Mock Tests Now!";
           const messageContent = `
               <div>
                 <p>Dear ${safeName},</p>
-                <p>We are excited to inform you that your account on the Luminedge Mock Booking Portal has been verified. You can now log in and book your mock tests conveniently at <a href="https://luminedge.io">luminedge.io</a>.</p>
+                <p>We are excited to inform you that your account on the Luminedge Mock Booking Portal has been verified. ${portalSentence}</p>
                 <h4>Important Guidelines:</h4>
                 <ul>
                   <li><strong>Photo ID Requirement:</strong> You must present a valid photo ID (Passport/NID) on the day of your mock test.</li>

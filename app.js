@@ -14,13 +14,20 @@ const feedbackRoutes = require("./routes/feedback.routes");
 const statsRoutes = require("./routes/stats.routes");
 const scheduleRoutes = require("./routes/schedule.routes");
 
-// Allowed browser origins. Driven by CORS_ORIGINS (comma-separated) so prod
-// never ships a hardcoded test domain; falls back to the known production
-// origins plus local dev.
-const DEFAULT_ORIGINS = ["https://luminedge.io", "https://crm.luminedge.io", "http://localhost:3000"];
-const ALLOWED_ORIGINS = (process.env.CORS_ORIGINS
-  ? process.env.CORS_ORIGINS.split(",").map((o) => o.trim()).filter(Boolean)
-  : DEFAULT_ORIGINS);
+// Browser origins. CORS_ORIGINS is required in production (enforced in
+// index.js validateEnv). Local development with the variable unset allows
+// only the Next.js dev server.
+const DEV_ORIGINS = ["http://localhost:3000"];
+function resolveAllowedOrigins() {
+  const configured = (process.env.CORS_ORIGINS || "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+  if (configured.length) return configured;
+  if (process.env.NODE_ENV === "production") return [];
+  return DEV_ORIGINS;
+}
+const ALLOWED_ORIGINS = resolveAllowedOrigins();
 
 module.exports = function createApp(collections) {
   const { usersCollection, coursesCollection, schedulesCollection, bookingMockCollection, client } = collections;

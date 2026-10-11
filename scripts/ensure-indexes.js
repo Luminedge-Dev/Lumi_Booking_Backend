@@ -1,29 +1,9 @@
-// Standalone version of index.js's ensureIndexes(), for running index
-// creation as a deploy/migration step instead of on every serverless cold
-// start. Run this once against an environment (e.g. right after deploying
-// to a fresh database), then set SKIP_INDEX_ENSURE_ON_BOOT=true in that
-// environment to stop index.js from also doing this on every cold start.
-//
-// Self-verifying: after attempting each index, it re-reads each collection's
-// actual indexes via listIndexes() and confirms every expected key (and, for
-// specs that require it, the `unique` option) from config/indexDefinitions.js
-// is really present, rather than trusting that createIndex() not throwing
-// means the index exists exactly as intended.
-//
-// One failing index doesn't stop the rest: each createIndex() is attempted
-// independently, so a single bad index (e.g. a duplicate-key conflict on the
-// unique email index) doesn't prevent the other 17 from being created, and
-// the verification report below always runs so you can see exactly which
-// index(es) need attention.
-//
-// Usage:  node scripts/ensure-indexes.js
 require("dotenv").config();
 const { MongoClient } = require("mongodb");
 const { getIndexOps, INDEX_SPECS } = require("../config/indexDefinitions");
 const { MONGO_CLIENT_OPTIONS } = require("../config/db");
+const { databaseName } = require("../config/databaseName");
 
-// Order-independent so a compound key document returned by MongoDB in a
-// different field order than the local spec literal still compares equal.
 const keySignature = (key) =>
   JSON.stringify(Object.entries(key).sort(([a], [b]) => a.localeCompare(b)));
 
@@ -36,7 +16,7 @@ const keySignature = (key) =>
   try {
     console.log("Connecting to MongoDB...");
     await client.connect();
-    const db = client.db("luminedge");
+    const db = client.db(databaseName());
     const collectionsByName = {
       users: db.collection("users"),
       bookingMock: db.collection("bookingMock"),

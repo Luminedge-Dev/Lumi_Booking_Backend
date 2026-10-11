@@ -1,11 +1,3 @@
-// Standalone SMTP delivery spot-check, calling the real emailSender directly.
-// Useful any time you need to confirm outbound email is actually working
-// (e.g. after changing SMTP_HOST/EMAIL/APP_PASS) without going through any
-// application route. Not part of the app's request path or test suite.
-//
-// Usage:
-//   node scripts/send-test-email.js --to someone@example.com
-//   node scripts/send-test-email.js --to someone@example.com --attach ./sample.pdf
 require("dotenv").config();
 const fs = require("fs");
 const path = require("path");

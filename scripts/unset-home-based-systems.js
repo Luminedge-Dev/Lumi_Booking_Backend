@@ -1,18 +1,7 @@
-// Rollback for scripts/set-home-based-systems.js — removes the per-course
-// `homeBasedSystems` field, returning enforcement to its permissive default
-// (field absent => Home allowed for any system). Reverses the migration's data
-// change; the code side is reversed separately via git.
-//
-// The field was absent on every course before the migration (confirmed via
-// inspect-courses.js), so unsetting it fully restores the prior state.
-//
-// Usage (from repo root, with MONGODB_URI set):
-//   node scripts/unset-home-based-systems.js
-// Dry run (no writes):  node scripts/unset-home-based-systems.js --dry
 require("dotenv").config();
 const { MongoClient } = require("mongodb");
+const { databaseName } = require("../config/databaseName");
 
-// Same course names the migration targeted (see set-home-based-systems.js).
 const NAMES = ["IELTS", "Pearson PTE", "GRE", "TOEFL"];
 
 const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -26,7 +15,7 @@ const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const client = new MongoClient(process.env.MONGODB_URI);
   try {
     await client.connect();
-    const courses = client.db("luminedge").collection("courses");
+    const courses = client.db(databaseName()).collection("courses");
 
     for (const name of NAMES) {
       const filter = {
