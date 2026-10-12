@@ -4,6 +4,14 @@ const nodemailer = require("nodemailer");
 const smtpUser = () => process.env.EMAIL || process.env.SMTP_EMAIL || "";
 const smtpPass = () => process.env.APP_PASS || process.env.SMTP_APP_PASS || "";
 
+function smtpConnection() {
+  const port = Number(process.env.SMTP_PORT || 587);
+  const requestedSecure = process.env.SMTP_SECURE === "true";
+  if (port === 465) return { port, secure: true, requestedSecure };
+  if (port === 587) return { port, secure: false, requestedSecure };
+  return { port, secure: requestedSecure, requestedSecure };
+}
+
 function messageIdDomain() {
   const from = process.env.EMAIL_FROM || smtpUser();
   const match = String(from).match(/@([A-Za-z0-9.-]+\.[A-Za-z]{2,})/);
@@ -13,10 +21,11 @@ function messageIdDomain() {
 let transporter;
 const getTransporter = () => {
   if (!transporter) {
+    const connection = smtpConnection();
     transporter = nodemailer.createTransport({
       host: process.env.SMTP_HOST,
-      port: Number(process.env.SMTP_PORT || 587),
-      secure: process.env.SMTP_SECURE === "true",
+      port: connection.port,
+      secure: connection.secure,
       auth: {
         user: smtpUser(),
         pass: smtpPass(),
@@ -210,4 +219,4 @@ const emailSenderBulk = async (items, gapMs = 550) => {
   return results;
 };
 
-module.exports = { emailSender, emailSenderBulk, logEmailOutcome };
+module.exports = { emailSender, emailSenderBulk, logEmailOutcome, smtpConnection };
