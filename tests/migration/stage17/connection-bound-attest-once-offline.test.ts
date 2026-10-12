@@ -61,7 +61,7 @@ function openPrisma(): OpenAttestorPrisma {
             if (statement === READ_ONLY_PROOF_SQL) {
               return { rows: [{ transaction_read_only: "on", role_name: ATTESTOR_ROLE, rolsuper: false, rolbypassrls: false, rolcreatedb: false, rolcreaterole: false }] };
             }
-            if (statement === "SELECT current_database()") return { rows: [{ current_database: "neondb" }] };
+            if (statement.startsWith("SELECT current_database()")) return { rows: [{ current_database: "neondb" }] };
             if (statement.startsWith("SELECT n.nspname")) return { rows: CLEANUP_ALLOWLIST.map((relname) => ({ nspname: "public", relname })) };
             if (statement.startsWith("SELECT src_ns.nspname")) {
               return { rows: [{ referencing_schema: "public", referencing_table: "sessions", referenced_schema: "public", referenced_table: "users" }] };
@@ -137,5 +137,22 @@ describe("stage17 connection-bound attest once", () => {
     assert.doesNotMatch(result.stdout, new RegExp(SECRET));
     assert.doesNotMatch(result.stdout, /fixture-token|postgres(ql)?:\/\//i);
     assert.equal(result.stderr, "");
+  });
+
+  it("keeps a Neon API 401 as an API credential failure", async () => {
+    const rejected: NeonApiFetch = async () => ({ status: 401, headers: { get: () => null }, json: async () => ({}) });
+    const result = await capture(() => main({
+      STAGE17_NEON_API_TOKEN: "fixture-token",
+      STAGE17_PREFLIGHT_POOLED_URL: url(PREFLIGHT_CHILD_ENDPOINT_ID, true),
+      STAGE17_PREFLIGHT_DIRECT_URL: url(PREFLIGHT_CHILD_ENDPOINT_ID),
+    }, ["node", "script"], {
+      fetchImpl: rejected,
+      openPrisma: openPrisma(),
+      clock: () => NOW,
+    }));
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /STOP: Neon API project request failed status 401 credential rejected/);
+    assert.doesNotMatch(result.stderr, /PostgreSQL driver failed/);
+    assert.equal(result.stdout, "");
   });
 });

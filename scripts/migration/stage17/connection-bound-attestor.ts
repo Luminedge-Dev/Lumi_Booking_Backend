@@ -47,6 +47,7 @@ const SAFE_DRIVER_CODES = new Set([
   "P1001",
   "P1002",
   "P1017",
+  "P2010",
   "P2024",
   "P2028",
   "28P01",
@@ -398,29 +399,27 @@ function unwrapAttestorError(error: unknown): unknown {
 
 function safeDriverCategory(error: unknown): string {
   const seen = new Set<unknown>();
-  let current: unknown = error;
-  while (typeof current === "object" && current !== null && !seen.has(current)) {
+  const pending: unknown[] = [error];
+  let prismaCode: string | undefined;
+  let nativeType = false;
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (typeof current !== "object" || current === null || seen.has(current)) continue;
     seen.add(current);
-    const record = current as { code?: unknown; name?: unknown; cause?: unknown; meta?: unknown };
-    const code = driverCode(record.code) ?? driverCode(nestedAdapterCode(record.meta));
-    if (code) return code;
+    const record = current as { code?: unknown; originalCode?: unknown; name?: unknown; cause?: unknown; meta?: unknown; driverAdapterError?: unknown; kind?: unknown };
+    const direct = driverCode(record.originalCode) ?? driverCode(record.code);
+    if (direct && !direct.startsWith("P")) return direct;
+    if (direct && prismaCode === undefined) prismaCode = direct;
+    if (record.kind === "UnsupportedNativeDataType") nativeType = true;
     if (record.name === "TimeoutError") return "timeout";
-    current = record.cause;
+    pending.push(record.meta, record.driverAdapterError, record.cause);
   }
-  return "unclassified";
+  if (nativeType) return "nativetype";
+  return prismaCode ?? "unclassified";
 }
 
 function driverCode(value: unknown): string | undefined {
   return typeof value === "string" && SAFE_DRIVER_CODES.has(value) ? value : undefined;
-}
-
-function nestedAdapterCode(meta: unknown): unknown {
-  if (typeof meta !== "object" || meta === null) return undefined;
-  const adapter = (meta as { driverAdapterError?: unknown }).driverAdapterError;
-  if (typeof adapter !== "object" || adapter === null) return undefined;
-  const cause = (adapter as { cause?: unknown }).cause;
-  if (typeof cause !== "object" || cause === null) return undefined;
-  return (cause as { originalCode?: unknown }).originalCode;
 }
 
 function isTimeout(error: unknown): boolean {

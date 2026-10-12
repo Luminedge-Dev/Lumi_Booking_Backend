@@ -52,7 +52,7 @@ function proofRow(patch: Record<string, unknown> = {}): PreflightQueryResult {
 }
 
 function catalogRows(statement: string): PreflightQueryResult {
-  if (statement === "SELECT current_database()") return { rows: [{ current_database: "neondb" }] };
+  if (statement.startsWith("SELECT current_database()")) return { rows: [{ current_database: "neondb" }] };
   if (statement.startsWith("SELECT n.nspname")) {
     return { rows: CLEANUP_ALLOWLIST.map((relname) => ({ nspname: "public", relname })) };
   }
@@ -262,7 +262,7 @@ describe("stage17 read-only runtime connector", () => {
     await assert.rejects(
       () => executeReadOnlyPreflight({
         ...childUrls(),
-        connect: connector(events, (statement) => statement === "SELECT current_database()" ? { rows: [] } : happyRespond(statement)),
+        connect: connector(events, (statement) => statement.startsWith("SELECT current_database()") ? { rows: [] } : happyRespond(statement)),
       }),
       /catalog row is malformed/,
     );

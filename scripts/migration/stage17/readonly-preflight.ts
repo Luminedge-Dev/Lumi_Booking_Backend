@@ -10,9 +10,9 @@ import { classifyDatabaseUrl, normalizedEndpointId } from "../../../src/app/data
 export const PREFLIGHT_CHILD_ENDPOINT_ID = "ep-dark-brook-b4atip73";
 
 export const PREFLIGHT_STATEMENTS = [
-  "SELECT current_database()",
-  "SELECT n.nspname, c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind = 'r'",
-  "SELECT src_ns.nspname AS referencing_schema, src.relname AS referencing_table, dst_ns.nspname AS referenced_schema, dst.relname AS referenced_table FROM pg_constraint con JOIN pg_class src ON src.oid = con.conrelid JOIN pg_namespace src_ns ON src_ns.oid = src.relnamespace JOIN pg_class dst ON dst.oid = con.confrelid JOIN pg_namespace dst_ns ON dst_ns.oid = dst.relnamespace WHERE con.contype = 'f'",
+  "SELECT current_database()::text AS current_database",
+  "SELECT n.nspname::text AS nspname, c.relname::text AS relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind = 'r'",
+  "SELECT src_ns.nspname::text AS referencing_schema, src.relname::text AS referencing_table, dst_ns.nspname::text AS referenced_schema, dst.relname::text AS referenced_table FROM pg_constraint con JOIN pg_class src ON src.oid = con.conrelid JOIN pg_namespace src_ns ON src_ns.oid = src.relnamespace JOIN pg_class dst ON dst.oid = con.confrelid JOIN pg_namespace dst_ns ON dst_ns.oid = dst.relnamespace WHERE con.contype = 'f'",
   "SELECT count(*) FROM public.sessions",
   "SELECT count(*) FROM public.accounts",
   "SELECT count(*) FROM public.verifications",

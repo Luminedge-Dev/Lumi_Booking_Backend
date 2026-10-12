@@ -12,7 +12,7 @@ export const READ_ONLY_BEGIN_SQL = "BEGIN READ ONLY";
 
 export const READ_ONLY_ROLLBACK_SQL = "ROLLBACK";
 
-export const READ_ONLY_PROOF_SQL = "SELECT current_setting('transaction_read_only') AS transaction_read_only, current_user AS role_name, rolsuper, rolbypassrls, rolcreatedb, rolcreaterole FROM pg_roles WHERE rolname = current_user";
+export const READ_ONLY_PROOF_SQL = "SELECT current_setting('transaction_read_only') AS transaction_read_only, current_user::text AS role_name, rolsuper, rolbypassrls, rolcreatedb, rolcreaterole FROM pg_roles WHERE rolname = current_user";
 
 export function readOnlyStatementTimeoutSql(timeoutMs: number): string {
   if (!Number.isInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 30_000) {

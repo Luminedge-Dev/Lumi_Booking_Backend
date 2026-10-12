@@ -8,6 +8,7 @@ import {
   PREFLIGHT_STATEMENT_TIMEOUT_MS,
   PreflightTimeoutError,
   executeReadOnlyPreflight,
+  mapCatalog,
   type PreflightConnect,
   type PreflightConnectInput,
   type PreflightQueryResult,
@@ -226,7 +227,7 @@ describe("stage17 read-only preflight adapter", () => {
       /PostgreSQL session is not read-only/,
     );
     assert.equal(flagEvents.includes("setup"), true);
-    assert.equal(flagEvents.includes("query:SELECT current_database()"), false);
+    assert.equal(flagEvents.includes(`query:${PREFLIGHT_STATEMENTS[0]}`), false);
     assert.equal(flagEvents.includes("close"), true);
 
     const setupEvents: string[] = [];
@@ -240,7 +241,7 @@ describe("stage17 read-only preflight adapter", () => {
         return true;
       },
     );
-    assert.equal(setupEvents.includes("query:SELECT current_database()"), false);
+    assert.equal(setupEvents.includes(`query:${PREFLIGHT_STATEMENTS[0]}`), false);
     assert.equal(setupEvents.includes("close"), true);
 
     const setupTimeoutEvents: string[] = [];
@@ -262,5 +263,24 @@ describe("stage17 read-only preflight adapter", () => {
     assert.equal(source.includes(SECRET), false);
     assert.equal(PREFLIGHT_CONNECTION_TIMEOUT_MS > 0 && PREFLIGHT_CONNECTION_TIMEOUT_MS <= 30_000, true);
     assert.equal(PREFLIGHT_STATEMENT_TIMEOUT_MS > 0 && PREFLIGHT_STATEMENT_TIMEOUT_MS <= 30_000, true);
+  });
+
+  it("accepts safe bigint counts and rejects counts outside the safe integer range", () => {
+    assert.match(PREFLIGHT_STATEMENTS[0], /current_database\(\)::text AS current_database/);
+    assert.match(PREFLIGHT_STATEMENTS[1], /nspname::text AS nspname/);
+    assert.match(PREFLIGHT_STATEMENTS[2], /::text AS referencing_schema/);
+    const catalogFor = (count: unknown) => {
+      const base = passingResults();
+      return [base[0], base[1], base[2], result([{ count }]), result([{ count: "0" }]), result([{ count: 0 }])];
+    };
+    assert.equal(mapCatalog(catalogFor(0n)).sessions, 0);
+    assert.equal(mapCatalog(catalogFor(1n)).sessions, 1);
+    assert.equal(mapCatalog(catalogFor(BigInt(Number.MAX_SAFE_INTEGER))).sessions, Number.MAX_SAFE_INTEGER);
+    assert.equal(mapCatalog(catalogFor("0")).sessions, 0);
+    assert.equal(mapCatalog(catalogFor(0)).sessions, 0);
+    assert.equal(mapCatalog(passingResults({ sessions: "2" })).sessions, 2);
+    for (const count of [BigInt(Number.MAX_SAFE_INTEGER) + 1n, -1n, 1.5, -2, "1.5", "nope"]) {
+      assert.throws(() => mapCatalog(catalogFor(count)), /identity count is malformed/);
+    }
   });
 });

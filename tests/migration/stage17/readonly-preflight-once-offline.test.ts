@@ -35,7 +35,7 @@ function catalog(statement: string): { rows: Record<string, unknown>[] } {
   if (statement === READ_ONLY_PROOF_SQL) {
     return { rows: [{ transaction_read_only: "on", role_name: ROLE, rolsuper: false, rolbypassrls: false, rolcreatedb: false, rolcreaterole: false }] };
   }
-  if (statement === "SELECT current_database()") return { rows: [{ current_database: "neondb" }] };
+  if (statement.startsWith("SELECT current_database()")) return { rows: [{ current_database: "neondb" }] };
   if (statement.startsWith("SELECT n.nspname")) return { rows: CLEANUP_ALLOWLIST.map((relname) => ({ nspname: "public", relname })) };
   if (statement.startsWith("SELECT src_ns.nspname")) {
     return { rows: [{ referencing_schema: "public", referencing_table: "sessions", referenced_schema: "public", referenced_table: "users" }] };

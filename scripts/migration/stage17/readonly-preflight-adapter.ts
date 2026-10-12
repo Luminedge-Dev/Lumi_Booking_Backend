@@ -164,11 +164,17 @@ function foreignKeys(result: PreflightQueryResult | undefined): PreflightForeign
 
 function identityCount(result: PreflightQueryResult | undefined): number {
   const raw = oneRow(result).count;
+  if (typeof raw === "bigint") return bigintCount(raw);
   const text = typeof raw === "number" ? String(raw) : raw;
   if (typeof text !== "string" || !/^\d+$/.test(text)) throw new PreflightStopError("identity count is malformed");
   const value = Number(text);
   if (!Number.isSafeInteger(value)) throw new PreflightStopError("identity count is malformed");
   return value;
+}
+
+function bigintCount(raw: bigint): number {
+  if (raw < 0n || raw > BigInt(Number.MAX_SAFE_INTEGER)) throw new PreflightStopError("identity count is malformed");
+  return Number(raw);
 }
 
 function oneRow(result: PreflightQueryResult | undefined): Record<string, unknown> {

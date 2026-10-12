@@ -2,7 +2,6 @@
 // Importing this file does not call Neon, open Prisma, or read application database configuration.
 // A passing report does not approve apiAttestation and does not authorize a later operation.
 
-import { AttestationStopError } from "./attestation";
 import { executeConnectionBoundAttestation, type ConnectionBoundAttestation, type OpenAttestorPrisma } from "./connection-bound-attestor";
 import type { NeonApiFetch } from "./neon-api-transport";
 import { PreflightTimeoutError } from "./readonly-preflight-adapter";
@@ -52,11 +51,15 @@ function containsCredential(report: string, secrets: readonly string[]): boolean
 function redactMessage(error: unknown): string {
   if (error instanceof PreflightTimeoutError) return "STOP: PostgreSQL query timed out";
   const message = error instanceof Error ? error.message : "";
-  if (message === "" || /postgres(ql)?:\/\//i.test(message) || /:[^:@/\s]+@/.test(message) || message.includes("Bearer ")) {
-    return "STOP: PostgreSQL driver failed";
-  }
-  if (error instanceof AttestationStopError || message.startsWith("STOP:")) return message;
+  if (isSafeStop(message)) return message;
   return "STOP: PostgreSQL driver failed";
+}
+
+function isSafeStop(message: string): boolean {
+  return message.startsWith("STOP: ")
+    && !/postgres(ql)?:\/\//i.test(message)
+    && !/:[^:@/\s]+@/.test(message)
+    && !message.includes("Bearer ");
 }
 
 export type { ConnectionBoundAttestation };

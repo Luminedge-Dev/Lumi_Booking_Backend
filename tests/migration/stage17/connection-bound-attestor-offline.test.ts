@@ -77,9 +77,9 @@ function proofRow(overrides: Record<string, unknown> = {}): Record<string, unkno
   };
 }
 
-function catalog(statement: string, counts = "0", foreignKey = { referencing_table: "sessions" }): PreflightQueryResult {
+function catalog(statement: string, counts: string | number | bigint = "0", foreignKey = { referencing_table: "sessions" }): PreflightQueryResult {
   if (statement === READ_ONLY_PROOF_SQL) return { rows: [proofRow()] };
-  if (statement === "SELECT current_database()") return { rows: [{ current_database: "neondb" }] };
+  if (statement.startsWith("SELECT current_database()")) return { rows: [{ current_database: "neondb" }] };
   if (statement.startsWith("SELECT n.nspname")) return { rows: CLEANUP_ALLOWLIST.map((relname) => ({ nspname: "public", relname })) };
   if (statement.startsWith("SELECT src_ns.nspname")) {
     return { rows: [{ referencing_schema: "public", referencing_table: foreignKey.referencing_table, referenced_schema: "public", referenced_table: "users" }] };
@@ -91,7 +91,7 @@ function catalog(statement: string, counts = "0", foreignKey = { referencing_tab
 function fakeOpen(events: string[], sql: string[], options: {
   txToken?: object;
   proof?: Record<string, unknown>;
-  counts?: string;
+  counts?: string | number | bigint;
   foreignTable?: string;
   failOpen?: Error;
   failQuery?: Error;
@@ -186,6 +186,11 @@ describe("stage17 connection-bound attestor", () => {
     assert.ok(requests.every((request) => request.method === "GET"));
     assert.deepEqual(events, ["open", "transaction", "disconnect"]);
     assert.equal(sql[0], SET_TRANSACTION_READ_ONLY_SQL);
+    assert.match(READ_ONLY_PROOF_SQL, /current_user::text AS role_name/);
+    assert.match(PREFLIGHT_STATEMENTS[0], /current_database\(\)::text AS current_database/);
+    assert.match(PREFLIGHT_STATEMENTS[1], /nspname::text AS nspname/);
+    assert.match(PREFLIGHT_STATEMENTS[1], /relname::text AS relname/);
+    assert.match(PREFLIGHT_STATEMENTS[2], /::text AS referencing_schema/);
     assert.equal(sql[1], READ_ONLY_PROOF_SQL);
     assert.equal(sql[2], readOnlyStatementTimeoutSql(PREFLIGHT_STATEMENT_TIMEOUT_MS));
     assert.deepEqual(sql.slice(3, 3 + PREFLIGHT_STATEMENTS.length), [...PREFLIGHT_STATEMENTS]);
@@ -253,6 +258,19 @@ describe("stage17 connection-bound attestor", () => {
     await assert.rejects(() => run({ openPrisma: outside }), /foreign-key referencer is outside the cleanup allowlist/);
     const occupied = fakeOpen([], [], { counts: "1" });
     await assert.rejects(() => run({ openPrisma: occupied }), /identity tables are not empty/);
+    const bigintOccupied = fakeOpen([], [], { counts: 1n });
+    await assert.rejects(() => run({ openPrisma: bigintOccupied }), /identity tables are not empty/);
+  });
+
+  it("accepts a complete fixture whose identity counts are bigint zero", async () => {
+    const result = await run({ openPrisma: fakeOpen([], [], { counts: 0n }) });
+    assert.equal(result.connectionBoundChecks, "passed");
+    assert.equal(result.liveEvidence, "not-attested");
+    assert.equal(result.apiAttestation, "not-approved");
+    assert.equal(result.writeAuthority, "none");
+    assert.equal(result.cleanupAuthorized, false);
+    assert.equal(result.loadAuthorized, false);
+    assert.equal(result.productionWriteAuthority, "none");
   });
 
   it("accepts an advancing clock across API and database delay, and rejects bad stamps", async () => {
@@ -353,6 +371,19 @@ describe("stage17 connection-bound attestor", () => {
       /phase CATALOG_QUERY category 42501/,
     );
     assert.equal(catalogEvents.at(-1), "disconnect");
+
+    const nativeType = Object.assign(new Error("raw query failed postgresql://role:secret@host/neondb"), {
+      code: "P2010",
+      meta: { driverAdapterError: { cause: { kind: "UnsupportedNativeDataType", type: "name", originalMessage: "secret" } } },
+    });
+    await assert.rejects(
+      () => run({ openPrisma: fakeOpen([], [], { failQuery: nativeType }) }),
+      (error: unknown) => {
+        assert.match((error as Error).message, /phase DATABASE_ROLE_PROOF category nativetype/);
+        assert.doesNotMatch((error as Error).message, /secret|postgres(ql)?:\/\/|name/);
+        return true;
+      },
+    );
 
     const cleanup = new Error("rollback postgresql://role:secret@host/neondb");
     await assert.rejects(
