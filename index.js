@@ -2,6 +2,7 @@ require("dotenv").config();
 const { connectDB, getCollections, client, ensureHealthy } = require("./config/db");
 const { getIndexOps } = require("./config/indexDefinitions");
 const { startReminderCron } = require("./jobs/reminderCron");
+const { smtpConnection } = require("./emailSender");
 const createApp = require("./app");
 
 function validateEnv() {
@@ -28,17 +29,12 @@ function validateEnv() {
     console.warn("⚠️  Neither EMAIL_FROM nor EMAIL/SMTP_EMAIL is set — email 'from' address is undefined.");
   }
 
-  const smtpPort = Number(process.env.SMTP_PORT || 587);
-  const smtpSecure = process.env.SMTP_SECURE === "true";
-  if (smtpPort === 465 && !smtpSecure) {
-    console.warn(
-      "⚠️  SMTP_PORT=465 requires SMTP_SECURE=true (implicit TLS) — email will fail as configured."
-    );
+  const { port: smtpPort, requestedSecure } = smtpConnection();
+  if (smtpPort === 465 && !requestedSecure) {
+    console.warn("⚠️  SMTP_PORT=465 uses implicit TLS. SMTP_SECURE was not true; connecting with TLS anyway.");
   }
-  if (smtpPort === 587 && smtpSecure) {
-    console.warn(
-      "⚠️  SMTP_PORT=587 normally pairs with SMTP_SECURE=false (STARTTLS) — email may fail as configured."
-    );
+  if (smtpPort === 587 && requestedSecure) {
+    console.warn("⚠️  SMTP_PORT=587 uses STARTTLS. SMTP_SECURE was true; connecting without implicit TLS.");
   }
 
   if (process.env.VERCEL && process.env.NODE_ENV !== "production") {
