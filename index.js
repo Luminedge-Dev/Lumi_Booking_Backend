@@ -1,9 +1,5 @@
 require("dotenv").config();
-const { connectDB, getCollections, client, ensureHealthy } = require("./config/db");
-const { getIndexOps } = require("./config/indexDefinitions");
-const { startReminderCron } = require("./jobs/reminderCron");
 const { smtpConnection } = require("./emailSender");
-const createApp = require("./app");
 
 function validateEnv() {
   const required = ["MONGODB_URI", "JWT_SECRET", "JWT_RESET_PASS_SECRET"];
@@ -45,6 +41,14 @@ function validateEnv() {
 }
 
 validateEnv();
+
+// Loaded only after validateEnv(): config/db constructs the MongoClient at
+// require time, so a missing MONGODB_URI must be reported by validateEnv()
+// rather than surfacing as a raw driver error.
+const { connectDB, getCollections, client, ensureHealthy } = require("./config/db");
+const { getIndexOps } = require("./config/indexDefinitions");
+const { startReminderCron } = require("./jobs/reminderCron");
+const createApp = require("./app");
 
 const port = process.env.PORT || 5000;
 // Vercel (and most serverless platforms) set this automatically.

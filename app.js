@@ -14,10 +14,34 @@ const feedbackRoutes = require("./routes/feedback.routes");
 const statsRoutes = require("./routes/stats.routes");
 const scheduleRoutes = require("./routes/schedule.routes");
 
-// Browser origins. CORS_ORIGINS is required in production (enforced in
-// index.js validateEnv). Local development with the variable unset allows
-// only the Next.js dev server.
-const DEV_ORIGINS = ["http://localhost:3000"];
+// Browser origins: an exact-match allow-list (never substring matching).
+// - Production: CORS_ORIGINS is required (enforced in index.js validateEnv) and
+//   is the only source. localhost is never added automatically.
+// - Development (NODE_ENV !== "production") with CORS_ORIGINS unset: the local
+//   frontend (FRONTEND_URL_LOCAL, default http://localhost:3000) plus the
+//   deployed frontend (FRONTEND_URL), each reduced to a bare origin. Missing or
+//   invalid optional values are ignored, so the allow-list is always an array.
+const DEFAULT_DEV_ORIGIN = "http://localhost:3000";
+
+function toOrigin(name) {
+  const raw = (process.env[name] || "").trim();
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    if (url.protocol === "http:" || url.protocol === "https:") return url.origin;
+  } catch {
+    // fall through to the warning below
+  }
+  console.warn(`⚠️  ${name} is not a valid http(s) URL — ignored for CORS.`);
+  return null;
+}
+
+function resolveDevOrigins() {
+  const local = toOrigin("FRONTEND_URL_LOCAL") || DEFAULT_DEV_ORIGIN;
+  const deployed = toOrigin("FRONTEND_URL");
+  return [...new Set([local, deployed].filter(Boolean))];
+}
+
 function resolveAllowedOrigins() {
   const configured = (process.env.CORS_ORIGINS || "")
     .split(",")
@@ -25,7 +49,7 @@ function resolveAllowedOrigins() {
     .filter(Boolean);
   if (configured.length) return configured;
   if (process.env.NODE_ENV === "production") return [];
-  return DEV_ORIGINS;
+  return resolveDevOrigins();
 }
 const ALLOWED_ORIGINS = resolveAllowedOrigins();
 

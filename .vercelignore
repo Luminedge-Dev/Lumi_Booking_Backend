@@ -1,0 +1,6 @@
+# Files that must never be uploaded by `vercel deploy` (CLI deploys upload the local working tree).
+.env
+.env.*
+node_modules
+_migration
+.git
