@@ -1,5 +1,26 @@
+# ============================================
+# Environment Variables & Secrets
+# ============================================
+
+# Ignore environment files containing sensitive credentials
 .env
 .env.*
+
+# Allow safe environment configuration templates
 !.env.example
-node_modules
-.vercel
+
+
+# ============================================
+# Dependencies
+# ============================================
+
+# Installed Node.js dependencies
+node_modules/
+
+
+# ============================================
+# Vercel Deployment
+# ============================================
+
+# Local Vercel project configuration and metadata
+.vercel/
