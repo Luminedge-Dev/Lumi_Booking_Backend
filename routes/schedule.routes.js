@@ -1,6 +1,6 @@
 const { Router } = require("express");
 const { ObjectId } = require("mongodb");
-const { verifyToken, verifyAdmin, verifyStaff } = require("../middleware/auth");
+const { verifyToken, verifyAdmin, verifyStaff, ownerOrStaff } = require("../middleware/auth");
 
 const router = Router();
 
@@ -166,8 +166,20 @@ module.exports = ({ schedulesCollection, coursesCollection }) => {
     }
   });
 
-  // Get schedules by userId
-  router.get("/schedule/:userId", verifyToken, async (req, res) => {
+  // Get schedules by userId.
+  //
+  // R01 (29 Oct 2026 corrective slice): this route used `verifyToken` alone, so
+  // any authenticated caller could ask for an arbitrary `userId`'s schedules.
+  // Evidence gathered before changing it: no current writer ever puts `userId`
+  // on a schedule document (`/admin/create-schedule` inserts courseId/dates/
+  // slots only, and booking updates only decrement slot counters), and no
+  // frontend page requests this path — so this is a legacy/historical read, not
+  // an actively exercised one. It stays protected anyway: authorisation is now
+  // owner-or-staff, which keeps historical per-student rows readable by their
+  // owner and by staff, and returns 403 to everyone else. The `{ schedules }`
+  // response contract is unchanged, and the date/course discovery route below
+  // (different arity) is untouched.
+  router.get("/schedule/:userId", ownerOrStaff("userId"), async (req, res) => {
     const { userId } = req.params;
     try {
       const schedules = await schedulesCollection.find({ userId }).toArray();

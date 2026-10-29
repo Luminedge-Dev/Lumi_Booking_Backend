@@ -99,6 +99,191 @@ const isHomeBookingAllowed = (course, candidateSystems) => {
   return candidateSystems.some((v) => normalize(v) && allowed.has(normalize(v)));
 };
 
+// FIX-02a / FIX-02b — cancellation is a soft, auditable state change.
+//
+// A cancelled booking is retained (admin history + TRF/feedback linkage) but
+// must never take part in an "active booking" decision: duplicate detection,
+// per-course entitlement usage, rosters, attendance or TRF lookups.
+//
+// Two details are easy to get wrong in this data model:
+//  - `status` already doubles as the attendance mirror: the attendance route
+//    writes "Present"/"Absent" into it, while booking creation writes
+//    "pending". So attendance can be signalled by `attendance` or by `status`.
+//  - historical rows may hold either casing ("present" or "Present"), so every
+//    attendance test here is case-insensitive.
+const CANCELLED_STATUS = "cancelled";
+const RECORDED_ATTENDANCE_PATTERN = /^(present|absent)$/i;
+
+// Filter fragment for queries that must only consider still-active bookings.
+const ACTIVE_BOOKING_FILTER = { status: { $ne: CANCELLED_STATUS } };
+
+// Filter fragment for the single transition into "cancelled". It is applied as
+// a conditional update so the claim is atomic: a booking that is already
+// cancelled, or that has recorded attendance, can never be claimed twice.
+const CANCELLABLE_BOOKING_FILTER = {
+  status: { $ne: CANCELLED_STATUS, $not: RECORDED_ATTENDANCE_PATTERN },
+  attendance: { $not: RECORDED_ATTENDANCE_PATTERN },
+};
+
+/** True when the booking has already been cancelled (any casing). */
+const isCancelledBooking = (booking) =>
+  normalize(booking && booking.status) === CANCELLED_STATUS;
+
+/** True when attendance is recorded on either the `attendance` or `status` field. */
+const hasRecordedAttendance = (booking) =>
+  !!booking &&
+  (RECORDED_ATTENDANCE_PATTERN.test((booking.attendance ?? "").toString().trim()) ||
+    RECORDED_ATTENDANCE_PATTERN.test((booking.status ?? "").toString().trim()));
+
+// D3-R08 / D3-R09 — cancellation may only restore a seat it can actually find
+// and justify. These are the controlled conflict messages; each one is paired
+// with a full abort of the cancellation transaction, so a rejected cancellation
+// leaves the booking, the student's credit and every schedule counter untouched.
+const CANCEL_LOCATION_UNKNOWN_MESSAGE =
+  "This booking has no recognised location (Home or Test Center), so it cannot be cancelled safely. Nothing was changed.";
+const CANCEL_SEAT_LINKAGE_MISSING_MESSAGE =
+  "This Test Center booking is missing its schedule or time slot reference, so its seat cannot be returned. Nothing was changed.";
+const CANCEL_SEAT_LINKAGE_INVALID_MESSAGE =
+  "This Test Center booking has an invalid schedule reference, so its seat cannot be returned. Nothing was changed.";
+const CANCEL_SCHEDULE_MISSING_MESSAGE =
+  "The schedule for this booking no longer exists, so its seat cannot be returned. Nothing was changed.";
+const CANCEL_SLOT_MISSING_MESSAGE =
+  "The time slot for this booking no longer exists on its schedule, so its seat cannot be returned. Nothing was changed.";
+const CANCEL_SLOT_AMBIGUOUS_MESSAGE =
+  "This booking's time slot matches more than one slot on its schedule, so the seat cannot be returned safely. Nothing was changed.";
+const CANCEL_SEAT_COUNTERS_INVALID_MESSAGE =
+  "The seat counters for this booking's time slot are missing or invalid, so the seat cannot be returned safely. Nothing was changed.";
+const CANCEL_SLOT_AT_CAPACITY_MESSAGE =
+  "This booking's time slot is already at or above its configured capacity, so returning a seat is not safe. Nothing was changed.";
+
+const BOOKING_LOCATION_HOME = "home";
+const BOOKING_LOCATION_TEST_CENTER = "test center";
+
+/**
+ * Classify the booking's location for cancellation purposes.
+ *
+ * D3-R08: a Test Center booking *must* release a seat. Treating incomplete or
+ * unrecognised metadata as "Home" (the old behaviour) refunds the credit while
+ * leaving the consumed seat behind, so anything that is not explicitly Home or
+ * Test Center is refused instead.
+ */
+const classifyBookingLocation = (booking) => {
+  const value = normalize(booking && booking.location);
+  if (value === BOOKING_LOCATION_HOME) return BOOKING_LOCATION_HOME;
+  if (value === BOOKING_LOCATION_TEST_CENTER) return BOOKING_LOCATION_TEST_CENTER;
+  return null;
+};
+
+/**
+ * A stored seat counter is only usable if it is a real, non-negative integer.
+ * Strings, decimals, negatives, null and undefined are all data-integrity
+ * problems: incrementing them would either throw mid-transaction or restore a
+ * meaningless seat, so they are rejected instead of coerced.
+ */
+const asStoredSeatCount = (value) =>
+  typeof value === "number" && Number.isFinite(value) && Number.isInteger(value) && value >= 0
+    ? value
+    : null;
+
+/**
+ * D3-R08 + D3-R09 — prove, inside the cancellation transaction, that exactly one
+ * schedule slot is the seat this booking consumed and that restoring a seat to it
+ * is arithmetically safe.
+ *
+ * Returns `{ ok: true, seatRestore }` where `seatRestore` carries the exact
+ * element identity (`slotId` as stored) and the exact observed counter, so the
+ * caller's conditional update can only ever touch that one element and only while
+ * the counter still holds the value that was validated.
+ *
+ * Returns `{ ok: false, message, detail? }` for every unsafe case. Callers turn
+ * that into a 409 and abort the transaction.
+ */
+async function resolveSeatRestoration({ booking, schedulesCollection, session }) {
+  const rawScheduleId = booking.scheduleId;
+  const rawSlotId = booking.slotId;
+
+  const hasScheduleId =
+    rawScheduleId !== undefined && rawScheduleId !== null && String(rawScheduleId).trim() !== "";
+  const hasSlotId =
+    rawSlotId !== undefined && rawSlotId !== null && String(rawSlotId).trim() !== "";
+
+  if (!hasScheduleId || !hasSlotId) {
+    return { ok: false, message: CANCEL_SEAT_LINKAGE_MISSING_MESSAGE };
+  }
+
+  // Legacy references may be strings or ObjectIds; anything else is not a
+  // schedule reference at all.
+  const scheduleIdHex = String(rawScheduleId).trim();
+  if (!/^[0-9a-fA-F]{24}$/.test(scheduleIdHex)) {
+    return { ok: false, message: CANCEL_SEAT_LINKAGE_INVALID_MESSAGE };
+  }
+  const scheduleObjectId = new ObjectId(scheduleIdHex);
+
+  const schedule = await schedulesCollection.findOne({ _id: scheduleObjectId }, { session });
+  if (!schedule) {
+    return { ok: false, message: CANCEL_SCHEDULE_MISSING_MESSAGE };
+  }
+
+  // slotId is a string for everything created by this API but historical rows
+  // may hold a number, so compare the normalised text form and then re-use the
+  // *stored* value in the update predicate.
+  const wantedSlotId = String(rawSlotId).trim();
+  const timeSlots = Array.isArray(schedule.timeSlots) ? schedule.timeSlots : [];
+  const matches = timeSlots.filter(
+    (slot) =>
+      slot &&
+      slot.slotId !== undefined &&
+      slot.slotId !== null &&
+      String(slot.slotId).trim() === wantedSlotId
+  );
+
+  if (matches.length === 0) {
+    return { ok: false, message: CANCEL_SLOT_MISSING_MESSAGE };
+  }
+  if (matches.length > 1) {
+    return {
+      ok: false,
+      message: CANCEL_SLOT_AMBIGUOUS_MESSAGE,
+      detail: { scheduleId: scheduleIdHex, slotId: wantedSlotId, matches: matches.length },
+    };
+  }
+
+  const slot = matches[0];
+  const available = asStoredSeatCount(slot.slot);
+  const capacity = asStoredSeatCount(slot.totalSlot);
+
+  // No invented defaults: a slot without a usable capacity cannot justify a
+  // restore. `capacity < 1` means the schedule can never have sold a seat here.
+  if (available === null || capacity === null || capacity < 1) {
+    return {
+      ok: false,
+      message: CANCEL_SEAT_COUNTERS_INVALID_MESSAGE,
+      detail: {
+        scheduleId: scheduleIdHex,
+        slotId: wantedSlotId,
+        slot: slot.slot,
+        totalSlot: slot.totalSlot,
+      },
+    };
+  }
+
+  // 0 <= available < capacity is the invariant. At or above capacity means the
+  // counters are already inconsistent (the direction the historical R07 defect
+  // pushed them) and one more seat would let the slot oversell.
+  if (available >= capacity) {
+    return {
+      ok: false,
+      message: CANCEL_SLOT_AT_CAPACITY_MESSAGE,
+      detail: { scheduleId: scheduleIdHex, slotId: wantedSlotId, slot: available, totalSlot: capacity },
+    };
+  }
+
+  return {
+    ok: true,
+    seatRestore: { scheduleObjectId, slotId: slot.slotId, observedSlot: available },
+  };
+}
+
 module.exports = ({ usersCollection, schedulesCollection, bookingMockCollection, coursesCollection, client }) => {
   router.post("/user/book-slot", verifyToken, async (req, res) => {
     try {
@@ -143,10 +328,14 @@ module.exports = ({ usersCollection, schedulesCollection, bookingMockCollection,
           .reduce((sum, m) => sum + (Number(m.mock) || 0), 0);
 
         if (purchasedForCourse > 0) {
+          // Only active bookings consume purchased entitlement: a cancelled
+          // booking must not permanently burn an appointment the student paid
+          // for, otherwise cancelling then rebooking is refused.
           const usedForCourse = await bookingMockCollection.countDocuments({
             userId,
             name: resolvedMockType,
             testType: resolvedTestType,
+            ...ACTIVE_BOOKING_FILTER,
           });
 
           if (usedForCourse >= purchasedForCourse) {
@@ -179,7 +368,7 @@ module.exports = ({ usersCollection, schedulesCollection, bookingMockCollection,
         }
 
         const existingBooking = await bookingMockCollection.findOne({
-          userId, bookingDate, location: "Home",
+          userId, bookingDate, location: "Home", ...ACTIVE_BOOKING_FILTER,
         });
 
         if (existingBooking) {
@@ -253,7 +442,7 @@ module.exports = ({ usersCollection, schedulesCollection, bookingMockCollection,
         }
 
         const existingBooking = await bookingMockCollection.findOne({
-          userId, scheduleId, bookingDate: schedule.startDate, slotId,
+          userId, scheduleId, bookingDate: schedule.startDate, slotId, ...ACTIVE_BOOKING_FILTER,
         });
         if (existingBooking) {
           return res.status(400).json({ message: "You have already booked a slot for this date." });
@@ -268,11 +457,23 @@ module.exports = ({ usersCollection, schedulesCollection, bookingMockCollection,
           // bookings for the last open seat, only one request's updateOne can
           // match-and-decrement — the loser sees modifiedCount 0 instead of
           // both succeeding and pushing slot negative (oversold seat).
+          //
+          // R07 (pre-existing defect corrected on Day 3): the guard used to be a
+          // second *separate* predicate on the same array
+          // (`"timeSlots.slotId": slotId, "timeSlots.slot": { $gt: 0 }`). With
+          // two array predicates the positional `$` is ambiguous, and the driver
+          // binds it to the element matching the FIRST predicate that matches —
+          // which decremented `timeSlots.0` instead of the chosen slot. Every
+          // Test Center booking therefore reduced the availability of the
+          // *first* slot and left the booked slot untouched, corrupting per-slot
+          // availability and breaking the "one booking, one seat" invariant that
+          // cancellation restores. `$elemMatch` binds the predicate to a single
+          // array element, so `$` deterministically refers to the booked slot and
+          // the sold-out guard still refuses the decrement.
           const slotUpdate = await schedulesCollection.updateOne(
             {
               _id: new ObjectId(scheduleId),
-              "timeSlots.slotId": slotId,
-              "timeSlots.slot": { $gt: 0 },
+              timeSlots: { $elemMatch: { slotId, slot: { $gt: 0 } } },
             },
             { $inc: { "timeSlots.$.slot": -1 } },
             { session }
@@ -440,6 +641,7 @@ module.exports = ({ usersCollection, schedulesCollection, bookingMockCollection,
             $match: {
               userId: { $in: userIds },
               attendance: { $in: ["present", "absent"] },
+              ...ACTIVE_BOOKING_FILTER,
             },
           },
           { $group: { _id: "$userId", count: { $sum: 1 } } },
@@ -472,8 +674,11 @@ module.exports = ({ usersCollection, schedulesCollection, bookingMockCollection,
       status: 1, attendance: 1, trfEmailed: 1, trfEmailAt: 1,
     };
     try {
+      // Students see only live bookings. Cancelled rows are deliberately kept
+      // in the database (see FIX-02a) and stay reachable through the
+      // administrative history endpoint `GET /admin/bookings`.
       const bookings = await bookingMockCollection
-        .find({ userId }, { projection: BOOKING_PROJECTION })
+        .find({ userId, ...ACTIVE_BOOKING_FILTER }, { projection: BOOKING_PROJECTION })
         .sort({ bookingDate: -1 })
         .toArray();
       res.json({ bookings });
@@ -487,7 +692,7 @@ module.exports = ({ usersCollection, schedulesCollection, bookingMockCollection,
     try {
       const homeBookingsWithUsers = await bookingMockCollection
         .aggregate([
-          { $match: { location: "Home" } },
+          { $match: { location: "Home", ...ACTIVE_BOOKING_FILTER } },
           { $addFields: { userObjectId: { $toObjectId: "$userId" } } },
           {
             $lookup: {
@@ -533,7 +738,7 @@ module.exports = ({ usersCollection, schedulesCollection, bookingMockCollection,
       };
 
       const bookings = await bookingMockCollection
-        .find({ scheduleId }, { projection })
+        .find({ scheduleId, ...ACTIVE_BOOKING_FILTER }, { projection })
         .sort({ _id: -1 })
         .skip(skip)
         .limit(limit)
@@ -615,7 +820,7 @@ module.exports = ({ usersCollection, schedulesCollection, bookingMockCollection,
           return res.status(400).json({ message: "Invalid booking date format." });
         }
 
-        updateFilter = { userId, location: "Home", bookingDate };
+        updateFilter = { userId, location: "Home", bookingDate, ...ACTIVE_BOOKING_FILTER };
         testDateFormatted = bookingDateParsed.toLocaleDateString("en-US", {
           year: "numeric",
           month: "long",
@@ -629,7 +834,7 @@ module.exports = ({ usersCollection, schedulesCollection, bookingMockCollection,
           return res.status(400).json({ message: "Invalid schedule ID format." });
         }
 
-        updateFilter = { scheduleId, userId };
+        updateFilter = { scheduleId, userId, ...ACTIVE_BOOKING_FILTER };
 
         schedule = await schedulesCollection.findOne({ _id: new ObjectId(scheduleId) });
         if (!schedule) {
@@ -734,8 +939,21 @@ module.exports = ({ usersCollection, schedulesCollection, bookingMockCollection,
     }
   });
 
-  // User can cancel their own booking; admin can cancel any
-  router.delete("/bookings/:bookingId", verifyToken, async (req, res) => {
+  // FIX-02a — cancellation is an administrative action.
+  //
+  // Previously this route was reachable by `verifyToken` and cancelled the
+  // student's own booking by *deleting* it, which let a student restore their
+  // own mock credit and destroyed the operating record. It is now:
+  //  - admin-only (hardened `verifyAdmin`: token -> live identity -> role);
+  //  - a soft cancellation that keeps the booking and records who/when;
+  //  - refused once attendance exists, so a test that was sat is never refunded;
+  //  - refused (409, full rollback) when a Test Center booking's seat linkage is
+  //    missing, malformed, orphaned or ambiguous, or when the slot's counters
+  //    cannot justify returning exactly one seat (D3-R08/D3-R09);
+  //  - atomic: the status claim, the seat restore and the credit restore are one
+  //    transaction, and the conditional claim is what makes the refund
+  //    exactly-once under duplicate or concurrent cancellation.
+  router.delete("/bookings/:bookingId", verifyAdmin, async (req, res) => {
     const { bookingId } = req.params;
 
     if (!ObjectId.isValid(bookingId)) {
@@ -752,40 +970,110 @@ module.exports = ({ usersCollection, schedulesCollection, bookingMockCollection,
       );
       if (!existingBooking) {
         await session.abortTransaction();
-        await session.endSession();
         return res.status(404).json({ message: "Booking not found." });
       }
 
-      if (req.user.role !== "admin" && existingBooking.userId !== String(req.user.userId)) {
+      if (isCancelledBooking(existingBooking)) {
         await session.abortTransaction();
-        await session.endSession();
-        return res.status(403).json({ message: "Forbidden" });
+        return res.status(409).json({ message: "This booking has already been cancelled." });
       }
 
-      const deleteResult = await bookingMockCollection.deleteOne(
-        { _id: new ObjectId(bookingId) },
+      if (hasRecordedAttendance(existingBooking)) {
+        await session.abortTransaction();
+        return res.status(409).json({
+          message:
+            "Attendance has already been recorded for this booking, so it cannot be cancelled or refunded.",
+        });
+      }
+
+      // D3-R08 / D3-R09 — establish, before any write, that this booking's seat
+      // (when it has one) can actually be returned and that returning it cannot
+      // push the slot beyond its configured capacity. A failure here aborts with
+      // 409: nothing is cancelled, refunded or incremented.
+      const locationKind = classifyBookingLocation(existingBooking);
+      if (!locationKind) {
+        await session.abortTransaction();
+        console.warn(
+          `Cancel rejected: booking ${bookingId} has an unrecognised location (location=${JSON.stringify(
+            existingBooking.location
+          )})`
+        );
+        return res.status(409).json({ message: CANCEL_LOCATION_UNKNOWN_MESSAGE });
+      }
+
+      let seatRestore = null;
+      if (locationKind === BOOKING_LOCATION_TEST_CENTER) {
+        const seatCheck = await resolveSeatRestoration({
+          booking: existingBooking,
+          schedulesCollection,
+          session,
+        });
+        if (!seatCheck.ok) {
+          await session.abortTransaction();
+          console.warn(
+            `Cancel rejected: seat cannot be safely restored for booking ${bookingId} - ${seatCheck.message}`,
+            seatCheck.detail || ""
+          );
+          return res.status(409).json({ message: seatCheck.message });
+        }
+        seatRestore = seatCheck.seatRestore;
+      }
+
+      // The one and only transition into "cancelled". The read checks above give
+      // precise messages; this conditional update is the authority. A concurrent
+      // canceller either loses the match here (matchedCount 0) or gets a write
+      // conflict below, so the credit/seat restore can never run twice.
+      const claimResult = await bookingMockCollection.updateOne(
+        { _id: new ObjectId(bookingId), ...CANCELLABLE_BOOKING_FILTER },
+        {
+          $set: {
+            status: CANCELLED_STATUS,
+            cancelledAt: new Date(),
+            cancelledBy: String(req.user.userId),
+          },
+        },
         { session }
       );
 
-      if (deleteResult.deletedCount === 0) {
+      if (claimResult.matchedCount !== 1) {
         await session.abortTransaction();
-        await session.endSession();
-        return res.status(500).json({ message: "Failed to cancel booking." });
+        return res.status(409).json({ message: "This booking is no longer cancellable." });
       }
 
-      if (
-        existingBooking.location === "Test Center" &&
-        existingBooking.scheduleId &&
-        existingBooking.slotId
-      ) {
-        await schedulesCollection.updateOne(
+      // D3-R09 — the restore is conditioned on the exact array element and the
+      // exact counter value validated above. `$elemMatch` binds the positional
+      // `$` to that single slot, and `slot: observedSlot` turns the increment
+      // into a compare-and-set: if a concurrent booking/cancellation moved the
+      // counter in between, the update matches nothing and the whole
+      // cancellation rolls back instead of exceeding the configured capacity.
+      //
+      // Home bookings never reach this branch: they hold no seat, which is why
+      // D3-R08 classifies the location explicitly instead of inferring "no
+      // linkage means Home".
+      if (seatRestore) {
+        const seatResult = await schedulesCollection.updateOne(
           {
-            _id: new ObjectId(existingBooking.scheduleId),
-            "timeSlots.slotId": existingBooking.slotId,
+            _id: seatRestore.scheduleObjectId,
+            timeSlots: {
+              $elemMatch: { slotId: seatRestore.slotId, slot: seatRestore.observedSlot },
+            },
           },
           { $inc: { "timeSlots.$.slot": 1 } },
           { session }
         );
+
+        // A concurrent change is a known conflict (409) and the whole
+        // transaction is rolled back, leaving the booking exactly as it was.
+        if (seatResult.matchedCount !== 1) {
+          await session.abortTransaction();
+          console.warn(
+            `Cancel aborted: seat could not be restored (scheduleId=${existingBooking.scheduleId}, slotId=${existingBooking.slotId})`
+          );
+          return res.status(409).json({
+            message:
+              "The schedule or time slot for this booking changed while it was being cancelled, so the seat could not be returned. Nothing was changed.",
+          });
+        }
       }
 
       const userUpdate = await usersCollection.updateOne(
@@ -794,10 +1082,9 @@ module.exports = ({ usersCollection, schedulesCollection, bookingMockCollection,
         { session }
       );
 
-      if (userUpdate.modifiedCount === 0) {
-        console.warn(`Warning: User mock count update failed for userId ${existingBooking.userId}`);
+      if (userUpdate.matchedCount !== 1) {
         await session.abortTransaction();
-        await session.endSession();
+        console.warn(`Warning: User mock count update failed for userId ${existingBooking.userId}`);
         return res.status(500).json({ message: "Failed to update mock count." });
       }
 
@@ -810,6 +1097,16 @@ module.exports = ({ usersCollection, schedulesCollection, bookingMockCollection,
     } catch (error) {
       if (session.inTransaction()) {
         try { await session.abortTransaction(); } catch {}
+      }
+      // A genuine write conflict means another request touched this booking,
+      // schedule or user document at the same instant — that is a conflict, not
+      // a server fault. Everything else (network, timeout, malformed data) stays
+      // a 500 and is logged, rather than being reported as a conflict.
+      if (error && error.code === 112) {
+        console.warn("Cancel conflicted with a concurrent write; transaction rolled back:", error.message);
+        return res.status(409).json({
+          message: "This booking is being modified by another request. Nothing was changed.",
+        });
       }
       console.error("Error canceling booking:", error);
       res.status(500).json({ message: "Internal server error" });

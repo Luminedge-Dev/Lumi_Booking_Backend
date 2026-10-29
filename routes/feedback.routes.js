@@ -3,24 +3,52 @@ const { ObjectId } = require("mongodb");
 const { waitUntil } = require("@vercel/functions");
 const { emailSender, logEmailOutcome } = require("../emailSender");
 const upload = require("../middleware/upload");
-const { verifyToken, verifyAdmin } = require("../middleware/auth");
+const { verifyAdmin, verifyTeacherOrAdmin, ownerOrStaff, staffOnly } = require("../middleware/auth");
+
+// Dynamic Mongo key paths are built from `scheduleId` and `segment`, so both
+// must be safe before they reach an update. Real schedule ids are Mongo
+// ObjectId hex strings; the pattern keeps that and other safe slugs while
+// rejecting dots/`$` (which would create or address nested/injected fields).
+const SAFE_SCHEDULE_ID = /^[A-Za-z0-9_-]{1,64}$/;
+// Keys that would resolve through the JS prototype chain when read off a
+// user document (e.g. `user.teachersBySchedule["constructor"]`).
+const RESERVED_KEYS = new Set(["__proto__", "prototype", "constructor"]);
+const FEEDBACK_SEGMENTS = ["listening", "reading", "writing", "speaking"];
+
+// FIX-02b: a cancelled booking is kept for history (FIX-02a) but is not an
+// active booking, so it must never be picked as the target of a teacher
+// assignment or a TRF lookup/send. Kept local to this feature rather than
+// promoted into shared/ for a single field predicate.
+const ACTIVE_BOOKING_FILTER = { status: { $ne: "cancelled" } };
 
 const router = Router();
 
 module.exports = ({ usersCollection, bookingMockCollection, client }) => {
-  // Teacher-accessible: email match enforced inside the handler
-  router.post("/admin/save-feedback", verifyToken, async (req, res) => {
+  // Teacher-accessible: the authenticated live identity must match the teacher
+  // assigned to this segment. The legacy body field `adminEmail` is still
+  // accepted for client compatibility but is never used for authorization.
+  router.post("/admin/save-feedback", verifyTeacherOrAdmin, async (req, res) => {
     try {
-      const { userId, scheduleId, segment, feedback, marks, admin, adminEmail } = req.body;
+      const { userId, scheduleId, segment, feedback, marks, admin } = req.body;
 
-      if (!userId || !scheduleId || !segment || feedback === undefined || !adminEmail) {
+      if (!userId || !scheduleId || !segment || feedback === undefined) {
         return res.status(400).json({
           success: false,
-          message: "Missing required fields (userId, scheduleId, segment, feedback, adminEmail).",
+          message: "Missing required fields (userId, scheduleId, segment, feedback).",
         });
       }
       if (!ObjectId.isValid(userId)) {
         return res.status(400).json({ success: false, message: "Invalid userId" });
+      }
+      if (
+        typeof scheduleId !== "string" ||
+        !SAFE_SCHEDULE_ID.test(scheduleId) ||
+        RESERVED_KEYS.has(scheduleId)
+      ) {
+        return res.status(400).json({ success: false, message: "Invalid scheduleId." });
+      }
+      if (typeof segment !== "string" || !FEEDBACK_SEGMENTS.includes(segment)) {
+        return res.status(400).json({ success: false, message: "Invalid feedback segment." });
       }
 
       const user = await usersCollection.findOne({ _id: new ObjectId(userId) });
@@ -33,12 +61,14 @@ module.exports = ({ usersCollection, bookingMockCollection, client }) => {
         writing: t.teacherWEmail || user.teacherWEmail,
         speaking: t.teacherSEmail || user.teacherSEmail,
       };
-      const assignedEmail = (teacherEmailMap[segment] || "").trim().toLowerCase();
-      const submittingEmail = adminEmail.trim().toLowerCase();
-      if (!assignedEmail || assignedEmail !== submittingEmail) {
+      const assignedEmail = String(teacherEmailMap[segment] || "").trim().toLowerCase();
+      // Identity comes only from the verified live account, never the body.
+      const submittingEmail = String(req.user.email || "").trim().toLowerCase();
+      if (!assignedEmail || !submittingEmail || assignedEmail !== submittingEmail) {
+        // Never disclose which teacher is assigned.
         return res.status(403).json({
           success: false,
-          message: `Unauthorized: Only ${assignedEmail || "assigned teacher"} can save feedback for ${segment}.`,
+          message: `Unauthorized: you are not the assigned teacher for ${segment} on this schedule.`,
         });
       }
 
@@ -53,6 +83,10 @@ module.exports = ({ usersCollection, bookingMockCollection, client }) => {
         }
       }
 
+      const flagPath = `feedbackStatusBySchedule.${scheduleId}.${segment}`;
+      const resultsPath = `resultsBySchedule.${scheduleId}`;
+
+      // UX fast path only; the conditional update below is the real lock.
       const alreadySaved = !!(user.feedbackStatusBySchedule?.[scheduleId]?.[segment]);
       if (alreadySaved) {
         return res.status(409).json({
@@ -73,12 +107,39 @@ module.exports = ({ usersCollection, bookingMockCollection, client }) => {
         timestamp: new Date().toISOString(),
       };
 
-      const updateData = {
-        $push: { [`resultsBySchedule.${scheduleId}`]: feedbackEntry },
-        $set: { [`feedbackStatusBySchedule.${scheduleId}.${segment}`]: true },
-      };
+      // One atomic write: the filter refuses the update when the status flag is
+      // already set OR a result entry for this segment already exists (legacy
+      // rows written before the flag existed). `$push` and `$set` therefore
+      // land together, and concurrent duplicates cannot both match.
+      const updateResult = await usersCollection.updateOne(
+        {
+          _id: new ObjectId(userId),
+          [flagPath]: { $ne: true },
+          [`${resultsPath}.segment`]: { $ne: segment },
+        },
+        {
+          $push: { [resultsPath]: feedbackEntry },
+          $set: { [flagPath]: true },
+        }
+      );
 
-      await usersCollection.updateOne({ _id: new ObjectId(userId) }, updateData);
+      if (updateResult.matchedCount === 0) {
+        // Distinguish "user disappeared" from "already recorded". A legacy
+        // result without its status flag also lands here and is reported as a
+        // conflict, never as a missing user.
+        const stillExists = await usersCollection.findOne(
+          { _id: new ObjectId(userId) },
+          { projection: { _id: 1 } }
+        );
+        if (!stillExists) {
+          return res.status(404).json({ success: false, message: "User not found." });
+        }
+        return res.status(409).json({
+          success: false,
+          message: `Feedback for ${segment} already saved for this schedule.`,
+        });
+      }
+
       return res.status(200).json({ success: true, message: "Feedback saved successfully." });
     } catch (err) {
       console.error("❌ Save feedback error:", err);
@@ -128,8 +189,9 @@ module.exports = ({ usersCollection, bookingMockCollection, client }) => {
     }
   });
 
-  // Teacher-accessible
-  router.get("/admin/get-admin-section/:userId/:scheduleId", verifyToken, async (req, res) => {
+  // Owner-or-staff (FIX-03): a student may read their own TRF admin section;
+  // staff keep the access their dashboards need.
+  router.get("/admin/get-admin-section/:userId/:scheduleId", ownerOrStaff("userId"), async (req, res) => {
     try {
       const { userId, scheduleId } = req.params;
       if (!ObjectId.isValid(userId))
@@ -155,8 +217,8 @@ module.exports = ({ usersCollection, bookingMockCollection, client }) => {
     }
   });
 
-  // Teacher-accessible
-  router.get("/admin/feedback-status/:userId/:scheduleId", verifyToken, async (req, res) => {
+  // Owner-or-staff (FIX-03)
+  router.get("/admin/feedback-status/:userId/:scheduleId", ownerOrStaff("userId"), async (req, res) => {
     try {
       const { userId, scheduleId } = req.params;
       if (!ObjectId.isValid(userId)) {
@@ -279,8 +341,9 @@ module.exports = ({ usersCollection, bookingMockCollection, client }) => {
     }
   });
 
-  // Teacher-accessible
-  router.get("/admin/assigned-teachers/:userId/:scheduleId", verifyToken, async (req, res) => {
+  // Staff only (FIX-03): this returns the assigned-teacher email map, which no
+  // student may see. Fails closed when the live identity cannot be verified.
+  router.get("/admin/assigned-teachers/:userId/:scheduleId", staffOnly, async (req, res) => {
     const { userId, scheduleId } = req.params;
 
     if (!ObjectId.isValid(userId)) {
@@ -336,7 +399,7 @@ module.exports = ({ usersCollection, bookingMockCollection, client }) => {
       session.startTransaction();
 
       const booking = await bookingMockCollection.findOne(
-        { _id: new ObjectId(bookingId), location: "Home" },
+        { _id: new ObjectId(bookingId), location: "Home", ...ACTIVE_BOOKING_FILTER },
         { session }
       );
 
@@ -360,7 +423,7 @@ module.exports = ({ usersCollection, bookingMockCollection, client }) => {
       );
 
       const updateBookingResult = await bookingMockCollection.findOneAndUpdate(
-        { _id: new ObjectId(bookingId) },
+        { _id: new ObjectId(bookingId), ...ACTIVE_BOOKING_FILTER },
         {
           $set: {
             [`teacher${skill}`]: teacher,
@@ -369,6 +432,14 @@ module.exports = ({ usersCollection, bookingMockCollection, client }) => {
         },
         { returnDocument: "after", session }
       );
+
+      // The booking was readable a moment ago in this same transaction; if it
+      // can no longer be updated it was cancelled by a competing request.
+      if (!updateBookingResult) {
+        await session.abortTransaction();
+        await session.endSession();
+        return res.status(409).json({ message: "This booking was cancelled while the teacher was being assigned." });
+      }
 
       await session.commitTransaction();
       await session.endSession();
@@ -392,8 +463,8 @@ module.exports = ({ usersCollection, bookingMockCollection, client }) => {
     }
   });
 
-  // Teacher-accessible
-  router.get("/admin/trf-email-status/:userId/:scheduleId", verifyToken, async (req, res) => {
+  // Owner-or-staff (FIX-03)
+  router.get("/admin/trf-email-status/:userId/:scheduleId", ownerOrStaff("userId"), async (req, res) => {
     try {
       const { userId, scheduleId } = req.params;
 
@@ -405,7 +476,7 @@ module.exports = ({ usersCollection, bookingMockCollection, client }) => {
       }
 
       const bookingDoc = await bookingMockCollection.findOne(
-        { userId, scheduleId },
+        { userId, scheduleId, ...ACTIVE_BOOKING_FILTER },
         { projection: { trfEmailed: 1, trfEmailAt: 1 } }
       );
       if (bookingDoc?.trfEmailed) {
@@ -414,7 +485,7 @@ module.exports = ({ usersCollection, bookingMockCollection, client }) => {
 
       if (ObjectId.isValid(scheduleId)) {
         const homeDoc = await bookingMockCollection.findOne(
-          { _id: new ObjectId(scheduleId), userId, location: "Home" },
+          { _id: new ObjectId(scheduleId), userId, location: "Home", ...ACTIVE_BOOKING_FILTER },
           { projection: { trfEmailed: 1, trfEmailAt: 1 } }
         );
         if (homeDoc?.trfEmailed) {
@@ -494,15 +565,19 @@ module.exports = ({ usersCollection, bookingMockCollection, client }) => {
 
       if (ObjectId.isValid(scheduleId)) {
         const home = await bookingMockCollection.findOne({
-          _id: new ObjectId(scheduleId), userId, location: "Home",
+          _id: new ObjectId(scheduleId), userId, location: "Home", ...ACTIVE_BOOKING_FILTER,
         });
         if (home) { booking = home; isHomeBooking = true; }
       }
 
       if (!booking) {
         booking =
-          (await bookingMockCollection.findOne({ userId, scheduleId })) ||
-          (await bookingMockCollection.find({ userId }).sort({ bookingDate: -1, _id: -1 }).limit(1).next());
+          (await bookingMockCollection.findOne({ userId, scheduleId, ...ACTIVE_BOOKING_FILTER })) ||
+          (await bookingMockCollection
+            .find({ userId, ...ACTIVE_BOOKING_FILTER })
+            .sort({ bookingDate: -1, _id: -1 })
+            .limit(1)
+            .next());
       }
 
       const sect = user.adminSectionBySchedule?.[scheduleId] || {};
@@ -595,8 +670,11 @@ module.exports = ({ usersCollection, bookingMockCollection, client }) => {
               { $set: { trfEmailed: true, trfEmailAt: now } }
             );
           } else {
+            // FIX-02b: mark only a still-active booking. Without this the write
+            // could stamp a cancelled row for the same student/schedule and
+            // leave the booking that was actually emailed looking unsent.
             await bookingMockCollection.updateOne(
-              { userId, scheduleId },
+              { userId, scheduleId, ...ACTIVE_BOOKING_FILTER },
               { $set: { trfEmailed: true, trfEmailAt: now } },
               { upsert: false }
             );

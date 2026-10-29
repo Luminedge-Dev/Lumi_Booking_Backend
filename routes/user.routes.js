@@ -3,9 +3,21 @@ const { ObjectId } = require("mongodb");
 const sanitizeHtml = require("sanitize-html");
 const { waitUntil } = require("@vercel/functions");
 const { emailSender, logEmailOutcome } = require("../emailSender");
-const { verifyToken, verifyAdmin, verifyStaff } = require("../middleware/auth");
+const {
+  verifyToken,
+  verifyAdmin,
+  verifyStaff,
+  requireVerifiedIdentity,
+  ownerOrStaff,
+} = require("../middleware/auth");
 
 const router = Router();
+
+// FIX-03 / R05: bound the free-text profile-edit note so a student cannot store
+// an arbitrarily large document on their own record. The approved audit rule is
+// to TRIM an oversized note to this many characters (not to reject it), so the
+// stored value is `note.slice(0, MAX_PROFILE_EDIT_NOTE)`.
+const MAX_PROFILE_EDIT_NOTE = 1000;
 
 // Compute a future ISO date from a duration string like "6 months" or "10 days"
 function getFutureISODate(duration) {
@@ -126,7 +138,7 @@ module.exports = ({ usersCollection }) => {
     }
   });
 
-  router.get("/user/status/:userId", verifyToken, async (req, res) => {
+  router.get("/user/status/:userId", ownerOrStaff("userId"), async (req, res) => {
     const { userId } = req.params;
     if (!ObjectId.isValid(userId)) {
       return res.status(400).json({ message: "Invalid user ID format." });
@@ -143,7 +155,7 @@ module.exports = ({ usersCollection }) => {
     }
   });
 
-  router.get("/profile/:userId", verifyToken, async (req, res) => {
+  router.get("/profile/:userId", ownerOrStaff("userId"), async (req, res) => {
     const { userId } = req.params;
 
     if (!ObjectId.isValid(userId)) {
@@ -271,17 +283,34 @@ module.exports = ({ usersCollection }) => {
     }
   });
 
-  router.post("/user/request-profile-edit", verifyToken, async (req, res) => {
+  // FIX-03: the record owner comes from the verified session only. The legacy
+  // `userId` the frontend still sends in the body is accepted and ignored, so a
+  // forged body can never point this at another student's account.
+  // R05: an over-long note is trimmed to MAX_PROFILE_EDIT_NOTE characters (the
+  // audit's rule) instead of being rejected; only a non-string note is a 400.
+  router.post("/user/request-profile-edit", verifyToken, requireVerifiedIdentity, async (req, res) => {
     try {
-      const { userId, note } = req.body;
+      const userId = String(req.user?.userId || "");
+      const { note } = req.body || {};
 
-      if (!userId || !ObjectId.isValid(userId)) {
+      if (!ObjectId.isValid(userId)) {
         return res.status(400).json({ success: false, message: "Invalid or missing userId" });
       }
+      if (note !== undefined && note !== null && typeof note !== "string") {
+        return res.status(400).json({ success: false, message: "Note must be text" });
+      }
+
+      const storedNote =
+        typeof note === "string" ? note.slice(0, MAX_PROFILE_EDIT_NOTE) : "";
 
       const result = await usersCollection.updateOne(
         { _id: new ObjectId(userId) },
-        { $set: { profileChangeRequestStatus: "requested", profileEditNote: note || "" } }
+        {
+          $set: {
+            profileChangeRequestStatus: "requested",
+            profileEditNote: storedNote,
+          },
+        }
       );
 
       if (result.modifiedCount > 0) {
@@ -547,7 +576,7 @@ module.exports = ({ usersCollection }) => {
   });
 
   // Must be last — catches /user/:userId after all specific /user/* routes
-  router.get("/user/:userId", verifyToken, async (req, res) => {
+  router.get("/user/:userId", ownerOrStaff("userId"), async (req, res) => {
     const { userId } = req.params;
 
     try {
