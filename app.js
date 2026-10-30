@@ -6,6 +6,7 @@ const mongoSanitize = require("express-mongo-sanitize");
 
 const { initAuth } = require("./middleware/auth");
 const { authLimiter, globalLimiter } = require("./middleware/rateLimit");
+const { bookingFreezeInterceptor } = require("./middleware/frozen");
 
 const authRoutes = require("./routes/auth.routes");
 const userRoutes = require("./routes/user.routes");
@@ -80,6 +81,11 @@ module.exports = function createApp(collections) {
       credentials: true,
     })
   );
+
+  // FIX-07: freeze only the three designated writes before body parsing and
+  // the global limiter. The route-level guards remain as defense in depth.
+  app.use(bookingFreezeInterceptor);
+
   app.use(express.json({ limit: "10mb" }));
 
   // Strip $-/dot-prefixed keys from body/query/params to block NoSQL operator

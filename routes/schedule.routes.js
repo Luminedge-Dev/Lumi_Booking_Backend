@@ -1,6 +1,7 @@
 const { Router } = require("express");
 const { ObjectId } = require("mongodb");
 const { verifyToken, verifyAdmin, verifyStaff, ownerOrStaff } = require("../middleware/auth");
+const { bookingFrozen } = require("../middleware/frozen");
 
 const router = Router();
 
@@ -67,7 +68,7 @@ module.exports = ({ schedulesCollection, coursesCollection }) => {
     }
   });
 
-  router.post("/admin/create-schedule", verifyAdmin, async (req, res) => {
+  router.post("/admin/create-schedule", bookingFrozen, verifyAdmin, async (req, res) => {
     const payload = Array.isArray(req.body) ? req.body : [];
     const successful = [];
     const failed = [];

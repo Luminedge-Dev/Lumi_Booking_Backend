@@ -5,6 +5,7 @@ const sanitizeHtml = require("sanitize-html");
 const { waitUntil } = require("@vercel/functions");
 const { emailSender, emailSenderBulk, logEmailOutcome } = require("../emailSender");
 const { verifyToken, verifyAdmin, verifyStaff } = require("../middleware/auth");
+const { bookingFrozen } = require("../middleware/frozen");
 const {
   parseDhakaDateTime,
   evaluateLeadTime,
@@ -404,7 +405,7 @@ module.exports = ({ usersCollection, schedulesCollection, bookingMockCollection,
     (typeof err?.hasErrorLabel === "function" && err.hasErrorLabel("TransientTransactionError")) ||
     err?.code === 112;
 
-  router.post("/user/book-slot", verifyToken, async (req, res) => {
+  router.post("/user/book-slot", bookingFrozen, verifyToken, async (req, res) => {
     try {
       // One clock read per request: every lead-time comparison below uses the
       // same instant, so a request can never straddle the 24-hour boundary.
@@ -1472,7 +1473,7 @@ module.exports = ({ usersCollection, schedulesCollection, bookingMockCollection,
   //  - atomic: the status claim, the seat restore and the credit restore are one
   //    transaction, and the conditional claim is what makes the refund
   //    exactly-once under duplicate or concurrent cancellation.
-  router.delete("/bookings/:bookingId", verifyAdmin, async (req, res) => {
+  router.delete("/bookings/:bookingId", bookingFrozen, verifyAdmin, async (req, res) => {
     const { bookingId } = req.params;
 
     if (!ObjectId.isValid(bookingId)) {
