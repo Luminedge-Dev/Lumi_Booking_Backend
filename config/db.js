@@ -89,6 +89,7 @@ function getCollections() {
     coursesCollection: db.collection("courses"),
     schedulesCollection: db.collection("schedules"),
     bookingMockCollection: db.collection("bookingMock"),
+    reminderDeliveriesCollection: db.collection("reminderDeliveries"),
   };
 }
 

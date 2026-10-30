@@ -21,6 +21,7 @@ const keySignature = (key) =>
       users: db.collection("users"),
       bookingMock: db.collection("bookingMock"),
       schedules: db.collection("schedules"),
+      reminderDeliveries: db.collection("reminderDeliveries"),
     };
 
     console.log("Creating/verifying indexes...");
@@ -29,6 +30,7 @@ const keySignature = (key) =>
       usersCollection: collectionsByName.users,
       bookingMockCollection: collectionsByName.bookingMock,
       schedulesCollection: collectionsByName.schedules,
+      reminderDeliveriesCollection: collectionsByName.reminderDeliveries,
     })) {
       try {
         await op();

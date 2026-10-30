@@ -54,7 +54,7 @@ function resolveAllowedOrigins() {
 const ALLOWED_ORIGINS = resolveAllowedOrigins();
 
 module.exports = function createApp(collections) {
-  const { usersCollection, coursesCollection, schedulesCollection, bookingMockCollection, client } = collections;
+  const { usersCollection, coursesCollection, schedulesCollection, bookingMockCollection, reminderDeliveriesCollection, client } = collections;
 
   // Let verifyToken check live account state (blocked/deleted, password change).
   initAuth(usersCollection);
@@ -105,7 +105,7 @@ module.exports = function createApp(collections) {
   );
 
   // booking routes first so /user/bookings/:userId is matched before /user/:userId
-  app.use("/api/v1", bookingRoutes({ usersCollection, schedulesCollection, bookingMockCollection, coursesCollection, client }));
+  app.use("/api/v1", bookingRoutes({ usersCollection, schedulesCollection, bookingMockCollection, coursesCollection, reminderDeliveriesCollection, client }));
   app.use("/api/v1", authRoutes({ usersCollection }));
   app.use("/api/v1", userRoutes({ usersCollection }));
   app.use("/api/v1", feedbackRoutes({ usersCollection, bookingMockCollection, client }));

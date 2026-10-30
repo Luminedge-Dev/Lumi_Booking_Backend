@@ -1,5 +1,6 @@
 const { Router } = require("express");
 const { ObjectId } = require("mongodb");
+const crypto = require("node:crypto");
 const sanitizeHtml = require("sanitize-html");
 const { waitUntil } = require("@vercel/functions");
 const { emailSender, emailSenderBulk, logEmailOutcome } = require("../emailSender");
@@ -12,6 +13,7 @@ const {
   evaluateEntitlement,
   isWholeCreditBalance,
 } = require("../utils/bookingEligibility");
+const reminderDelivery = require("../utils/reminderDelivery");
 
 const router = Router();
 
@@ -292,7 +294,7 @@ async function resolveSeatRestoration({ booking, schedulesCollection, session })
   };
 }
 
-module.exports = ({ usersCollection, schedulesCollection, bookingMockCollection, coursesCollection, client }) => {
+module.exports = ({ usersCollection, schedulesCollection, bookingMockCollection, coursesCollection, reminderDeliveriesCollection, client }) => {
   // ---------------------------------------------------------------------------
   // FIX-04 — booking validation and eligibility (Home + Test Center)
   //
@@ -860,105 +862,291 @@ module.exports = ({ usersCollection, schedulesCollection, bookingMockCollection,
     }
   });
 
-  // /send-reminder can be called two ways: normally, by an admin's browser
-  // session (verifyAdmin), or as a self-continuation (see below) — a
-  // server-to-server call this same route makes to itself when a recipient
-  // list is too large to finish inside one invocation's time budget. The
-  // continuation call carries a shared secret instead of an admin session,
-  // since there is no browser/cookie involved.
-  const SEND_REMINDER_CONTINUATION_HEADER = "x-internal-continuation-secret";
+  const CONTINUATION_HEADER = "x-reminder-continuation";
+  const CANCELLED_REMINDER_FILTER = { status: { $ne: CANCELLED_STATUS } };
 
-  function verifyAdminOrContinuation(req, res, next) {
-    const secret = process.env.CRON_SECRET;
-    if (secret && req.headers[SEND_REMINDER_CONTINUATION_HEADER] === secret) {
+  function verifyReminderCaller(req, res, next) {
+    const rawToken = req.headers[CONTINUATION_HEADER];
+    if (rawToken !== undefined) {
+      const payload = reminderDelivery.verifyContinuation(rawToken, process.env.CRON_SECRET);
+      if (!payload) return res.status(401).json({ message: "Invalid reminder continuation." });
+      req.reminderContinuation = payload;
       return next();
     }
     return verifyAdmin(req, res, next);
   }
 
-  router.post("/send-reminder", verifyAdminOrContinuation, async (req, res) => {
-    const { emails, continuationDepth } = req.body;
+  async function resolveReminderRecipients(scheduleId, schedule, bookingIds) {
+    const query = { scheduleId, ...CANCELLED_REMINDER_FILTER };
+    if (bookingIds) query._id = { $in: bookingIds.map((id) => new ObjectId(id)) };
+    const bookings = await bookingMockCollection.find(query).toArray();
+    const userIds = [...new Set(bookings.flatMap((booking) => reminderDelivery.normalizeUserIds(booking.userId)))];
+    const objectIds = userIds.filter((id) => ObjectId.isValid(id)).map((id) => new ObjectId(id));
+    const users = objectIds.length
+      ? await usersCollection.find({ _id: { $in: objectIds } }, { projection: { _id: 1, name: 1, email: 1, role: 1, status: 1, isDeleted: 1 } }).toArray()
+      : [];
+    const usersById = new Map(users.map((user) => [String(user._id), user]));
+    const candidates = new Map();
+    let invalidRecipients = 0;
+    let ineligible = 0;
+    for (const booking of bookings) {
+      for (const rawId of reminderDelivery.normalizeUserIds(booking.userId)) {
+        if (!ObjectId.isValid(rawId)) { ineligible += 1; continue; }
+        const userId = String(new ObjectId(rawId));
+        const user = usersById.get(userId);
+        if (!user || user.isDeleted === true || normalize(user.status) !== "completed" || user.role !== "user") {
+          ineligible += 1;
+          continue;
+        }
+        const email = reminderDelivery.normalizeEmail(user.email);
+        if (!reminderDelivery.validEmail(email)) { invalidRecipients += 1; continue; }
+        const candidate = { scheduleId, bookingId: String(booking._id), userId, email, user, booking };
+        const previous = candidates.get(userId);
+        if (!previous) candidates.set(userId, candidate);
+        else if (previous.ambiguous) continue;
+        else if (previous.bookingId !== candidate.bookingId && (
+          String(previous.booking.slotId || "") !== String(booking.slotId || "") ||
+          String(previous.booking.bookingDate || "") !== String(booking.bookingDate || "") ||
+          String(previous.booking.startTime || "") !== String(booking.startTime || "") ||
+          String(previous.booking.endTime || "") !== String(booking.endTime || "") ||
+          normalize(previous.booking.location) !== normalize(booking.location) ||
+          normalize(previous.booking.testType) !== normalize(booking.testType) ||
+          normalize(previous.booking.testSystem) !== normalize(booking.testSystem)
+        )) candidates.set(userId, { ambiguous: true });
+      }
+    }
+    const emailOwners = new Map();
+    for (const [userId, candidate] of candidates) {
+      if (candidate.ambiguous) continue;
+      const owners = emailOwners.get(candidate.email) || new Set();
+      owners.add(userId);
+      emailOwners.set(candidate.email, owners);
+    }
+    const recipients = [];
+    for (const [userId, candidate] of candidates) {
+      if (candidate.ambiguous || (emailOwners.get(candidate.email)?.size || 0) > 1) { ineligible += 1; continue; }
+      const scheduleDate = reminderDelivery.formatDate(schedule.startDate);
+      const bookingDate = reminderDelivery.formatDate(candidate.booking.bookingDate);
+      if (!scheduleDate || !bookingDate || scheduleDate !== bookingDate ||
+          (candidate.booking.testType && schedule.testType && normalize(candidate.booking.testType) !== normalize(schedule.testType)) ||
+          (candidate.booking.testSystem && schedule.testSystem && normalize(candidate.booking.testSystem) !== normalize(schedule.testSystem))) {
+        ineligible += 1;
+        continue;
+      }
+      const slot = reminderDelivery.bookingSlot(schedule, candidate.booking);
+      if (!slot) { ineligible += 1; continue; }
+      recipients.push({ ...candidate, slot });
+    }
+    return { recipients, invalidRecipients, ineligible };
+  }
 
-    if (!emails || !emails.length) {
-      return res.status(400).json({ message: "No email data provided." });
+  router.post("/send-reminder", verifyReminderCaller, async (req, res) => {
+    const body = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
+    const continuation = req.reminderContinuation;
+    const allowedKeys = continuation ? ["scheduleId"] : ["scheduleId", "bookingIds", "retryFailed"];
+    if (Object.keys(body).some((key) => !allowedKeys.includes(key))) {
+      return res.status(400).json({ message: "Invalid reminder request." });
+    }
+    const scheduleId = typeof body.scheduleId === "string" ? body.scheduleId.trim().toLowerCase() : "";
+    if (!reminderDelivery.isValidScheduleId(scheduleId) || (continuation && continuation.scheduleId !== scheduleId)) {
+      return res.status(400).json({ message: "A valid scheduleId is required." });
+    }
+    let bookingIds = null;
+    if (!continuation && body.bookingIds !== undefined) {
+      if (!Array.isArray(body.bookingIds) || body.bookingIds.length === 0 ||
+          body.bookingIds.some((id) => typeof id !== "string" || !reminderDelivery.isValidScheduleId(id.trim().toLowerCase()))) {
+        return res.status(400).json({ message: "bookingIds must be a non-empty list of valid booking IDs." });
+      }
+      bookingIds = [...new Set(body.bookingIds.map((id) => id.trim().toLowerCase()))];
+    }
+    if (body.retryFailed !== undefined && typeof body.retryFailed !== "boolean") {
+      return res.status(400).json({ message: "retryFailed must be a boolean." });
     }
 
     try {
-      // Bounded-concurrency send (emailSenderBulk caps in-flight SMTP connections
-      // to match the pooled transporter's maxConnections) rather than a plain
-      // Promise.all fan-out, which could exceed the SMTP host's concurrent-
-      // connection limit and get sends rejected/throttled.
-      const results = await emailSenderBulk(
-        emails.map(({ email, subject, message }) => ({
-          subject,
-          to: email,
-          content: message,
-        }))
-      );
-
-      const sent = results.filter((r) => r.success).length;
-      const failed = results.length - sent;
-      // Recipients skipped because the bulk send-time budget ran out (as
-      // opposed to a real delivery failure) — their original {email, subject,
-      // message} entries are carried forward into a self-continuation call
-      // below (not just reported), so a recipient list larger than one
-      // invocation can process still gets fully sent without the admin having
-      // to manually resubmit the leftovers.
-      const skippedIndexes = results
-        .map((r, i) => (r.error?.message === "Skipped: send time budget exceeded" ? i : -1))
-        .filter((i) => i !== -1);
-      const skippedRecipients = skippedIndexes.map((i) => emails[i]?.email).filter(Boolean);
-      const skippedCount = skippedRecipients.length;
-
-      // Reflect the real outcome in the status code so a client that keys off
-      // HTTP status isn't told "success" when nothing was delivered:
-      // all-failed -> 502, partial -> 207 (Multi-Status), all-sent -> 200.
-      const status = sent === 0 ? 502 : failed > 0 ? 207 : 200;
-      res.status(status).json({
-        message: `Emails processed: ${sent} sent, ${failed} failed.`,
-        sent,
-        failed,
-        skippedCount,
-        skippedRecipients,
-        continuing: skippedCount > 0,
-      });
-
-      if (skippedCount > 0) {
-        // Hard cap on chain length so a bug (or a genuinely huge list) can
-        // never loop forever — logs and stops instead of retrying forever.
-        const MAX_CONTINUATION_DEPTH = 20;
-        const depth = (continuationDepth || 0) + 1;
-
-        if (depth > MAX_CONTINUATION_DEPTH) {
-          console.error(
-            `send-reminder: continuation depth limit (${MAX_CONTINUATION_DEPTH}) reached — ${skippedCount} recipient(s) never sent:`,
-            skippedRecipients
-          );
-        } else if (!process.env.CRON_SECRET) {
-          console.error(
-            `send-reminder: CRON_SECRET is not set, cannot self-continue — ${skippedCount} recipient(s) were not sent:`,
-            skippedRecipients
-          );
-        } else {
-          const remainingEmails = skippedIndexes.map((i) => emails[i]);
-          waitUntil(
-            fetch(`${req.protocol}://${req.get("host")}/api/v1/send-reminder`, {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                [SEND_REMINDER_CONTINUATION_HEADER]: process.env.CRON_SECRET,
-              },
-              body: JSON.stringify({ emails: remainingEmails, continuationDepth: depth }),
-            }).catch((err) => console.error("send-reminder: continuation request failed:", err))
-          );
+      if (!await reminderDelivery.hasRequiredUniqueIndex(reminderDeliveriesCollection)) {
+        return res.status(503).json({ message: "Reminder delivery is temporarily unavailable." });
+      }
+      const publicApiUrl = reminderDelivery.configuredPublicApiUrl(process.env.PUBLIC_API_URL);
+      const continuationSecret = process.env.CRON_SECRET;
+      if (!publicApiUrl || !continuationSecret) {
+        return res.status(503).json({ message: "Reminder delivery is temporarily unavailable." });
+      }
+      const schedule = await schedulesCollection.findOne({ _id: new ObjectId(scheduleId) });
+      if (!schedule) return res.status(404).json({ message: "Schedule not found." });
+      const resolved = await resolveReminderRecipients(scheduleId, schedule, bookingIds);
+      if (bookingIds) {
+        const selectedBookingCount = await bookingMockCollection.countDocuments({
+          _id: { $in: bookingIds.map((id) => new ObjectId(id)) }, scheduleId, ...CANCELLED_REMINDER_FILTER,
+        });
+        const eligibleBookingIds = new Set(resolved.recipients.map((recipient) => recipient.bookingId));
+        if (selectedBookingCount !== bookingIds.length || bookingIds.some((id) => !eligibleBookingIds.has(id))) {
+          return res.status(400).json({ message: "One or more bookingIds are not eligible for this schedule." });
         }
       }
+      const jobId = continuation?.jobId || crypto.randomUUID();
+      const now = new Date();
+      await reminderDeliveriesCollection.updateMany(
+        { scheduleId, status: "processing", leaseExpiresAt: { $lte: now } },
+        { $set: { status: "uncertain", outcome: "processing_lease_expired", lastErrorCategory: "lease_expired", updatedAt: now }, $unset: { leaseOwner: "", leaseExpiresAt: "" } }
+      );
+
+      const recipientMap = new Map(resolved.recipients.map((recipient) => [recipient.userId, recipient]));
+      let ineligible = resolved.ineligible;
+      let sent = 0;
+
+      if (!continuation) {
+        for (const recipient of resolved.recipients) {
+          try {
+            await reminderDeliveriesCollection.insertOne({
+              scheduleId, userId: recipient.userId, status: "deferred", jobId,
+              attemptCount: 0, outcome: "not_attempted", createdAt: now, updatedAt: now,
+            });
+          } catch (error) {
+            if (error?.code !== 11000) throw error;
+            const existing = await reminderDeliveriesCollection.findOne({ scheduleId, userId: recipient.userId });
+            if (existing?.status === "failed" && body.retryFailed === true) {
+              await reminderDeliveriesCollection.updateOne(
+                { _id: existing._id, status: "failed" },
+                { $set: { status: "deferred", outcome: "explicit_retry", jobId, updatedAt: now }, $unset: { lastErrorCategory: "" } }
+              );
+            }
+          }
+        }
+      }
+
+      const existingStatuses = resolved.recipients.length
+        ? await reminderDeliveriesCollection.find({
+            scheduleId,
+            userId: { $in: resolved.recipients.map((recipient) => recipient.userId) },
+            status: { $in: ["accepted", "failed", "uncertain", "processing"] },
+            ...(continuation ? { jobId: continuation.jobId } : {}),
+          }).toArray()
+        : [];
+      let alreadyAccepted = existingStatuses.filter((row) => row.status === "accepted").length;
+      let failed = existingStatuses.filter((row) => row.status === "failed").length;
+      let processing = existingStatuses.filter((row) => row.status === "processing").length;
+      let deferred = 0;
+      let uncertain = existingStatuses.filter((row) => row.status === "uncertain").length;
+      const countedStates = new Set(existingStatuses.map((row) => `${row.userId}:${row.status}`));
+
+      const scopeFilter = continuation
+        ? { scheduleId, jobId }
+        : { scheduleId, userId: { $in: resolved.recipients.map((recipient) => recipient.userId) } };
+      const rows = resolved.recipients.length || continuation
+        ? await reminderDeliveriesCollection.find(scopeFilter).toArray()
+        : [];
+      const leaseOwner = crypto.randomUUID();
+      const claimed = [];
+      for (const row of rows) {
+        const stateKey = `${row.userId}:${row.status}`;
+        if (row.status === "accepted") { if (!countedStates.has(stateKey)) alreadyAccepted += 1; continue; }
+        if (row.status === "uncertain") { if (!countedStates.has(stateKey)) uncertain += 1; continue; }
+        if (row.status === "failed") { if (!countedStates.has(stateKey)) failed += 1; continue; }
+        if (row.status === "processing") { if (!countedStates.has(stateKey)) processing += 1; continue; }
+        if (row.status !== "deferred") continue;
+        const claimAt = new Date();
+        const claim = await reminderDeliveriesCollection.findOneAndUpdate(
+          { _id: row._id, status: "deferred", jobId: row.jobId },
+          { $set: { status: "processing", leaseOwner, leaseExpiresAt: new Date(claimAt.getTime() + reminderDelivery.PROCESSING_LEASE_MS), updatedAt: claimAt }, $inc: { attemptCount: 1 } },
+          { returnDocument: "after" }
+        );
+        if (claim) claimed.push(claim);
+        else processing += 1;
+      }
+
+      const dispatch = [];
+      for (const row of claimed) {
+        const recipient = recipientMap.get(row.userId);
+        const freshBooking = recipient && await bookingMockCollection.findOne({
+          _id: new ObjectId(recipient.bookingId), scheduleId, ...CANCELLED_REMINDER_FILTER,
+        });
+        const freshUser = recipient && await usersCollection.findOne({ _id: new ObjectId(recipient.userId) });
+        const freshSlot = freshBooking && reminderDelivery.bookingSlot(schedule, freshBooking);
+        if (!recipient || !freshBooking || !freshUser || freshUser.isDeleted === true || normalize(freshUser.status) !== "completed" || freshUser.role !== "user" || !freshSlot || !reminderDelivery.validEmail(freshUser.email)) {
+          await reminderDeliveriesCollection.updateOne({ _id: row._id, status: "processing", leaseOwner }, {
+            $set: { status: "ineligible", outcome: "booking_or_account_no_longer_eligible", lastErrorCategory: "eligibility_changed", updatedAt: new Date() },
+            $unset: { leaseOwner: "", leaseExpiresAt: "" },
+          });
+          ineligible += 1;
+          continue;
+        }
+        const email = reminderDelivery.buildReminderEmail({ user: freshUser, schedule, booking: freshBooking, slot: freshSlot });
+        dispatch.push({ row, recipient: { ...recipient, email: reminderDelivery.normalizeEmail(freshUser.email) }, email });
+      }
+
+      if (dispatch.length) {
+        let smtpResults;
+        try {
+          smtpResults = await emailSenderBulk(
+            dispatch.map(({ recipient, email }) => ({ subject: email.subject, to: recipient.email, content: email.message })),
+            undefined,
+            { redactRecipient: true }
+          );
+        } catch {
+          smtpResults = dispatch.map(() => ({ success: false, error: new Error("SMTP outcome uncertain") }));
+        }
+        for (let index = 0; index < dispatch.length; index += 1) {
+          const { row } = dispatch[index];
+          const result = (Array.isArray(smtpResults) && smtpResults[index]) || { success: false, error: new Error("SMTP outcome uncertain") };
+          const budgetSkipped = result.error?.message === "Skipped: send time budget exceeded";
+          const notConfigured = /SMTP is not configured/i.test(result.error?.message || "");
+          const status = result.success ? "accepted" : budgetSkipped ? "deferred" : notConfigured ? "failed" : "uncertain";
+          const update = {
+            status,
+            outcome: result.success ? "smtp_accepted" : budgetSkipped ? "not_attempted_budget" : notConfigured ? "smtp_not_configured" : "transport_uncertain",
+            updatedAt: new Date(),
+          };
+          if (result.success) update.smtpAcceptedAt = new Date();
+          if (!result.success) update.lastErrorCategory = budgetSkipped ? "send_budget" : notConfigured ? "smtp_not_configured" : "transport_uncertain";
+          await reminderDeliveriesCollection.updateOne(
+            { _id: row._id, status: "processing", leaseOwner },
+            { $set: update, $unset: { leaseOwner: "", leaseExpiresAt: "" } }
+          );
+          if (status === "accepted") sent += 1;
+          else if (status === "failed") failed += 1;
+          else if (status === "deferred") deferred += 1;
+          else uncertain += 1;
+        }
+      }
+
+      const depth = continuation?.depth || 0;
+      const deferredRows = (resolved.recipients.length || continuation)
+        ? await reminderDeliveriesCollection.find({ ...scopeFilter, status: "deferred" }).toArray()
+        : [];
+      const deferredJobIds = [...new Set(deferredRows.map((row) => row.jobId).filter(Boolean))];
+      const canContinue = deferredJobIds.length > 0 && depth < reminderDelivery.MAX_CONTINUATION_DEPTH;
+      if (canContinue) {
+        const continuations = deferredJobIds.map((pendingJobId) => {
+          const token = reminderDelivery.signContinuation({
+            scheduleId, jobId: pendingJobId, depth: depth + 1, exp: Date.now() + reminderDelivery.CONTINUATION_TTL_MS,
+          }, continuationSecret);
+          return fetch(`${publicApiUrl}/api/v1/send-reminder`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", [CONTINUATION_HEADER]: token },
+            body: JSON.stringify({ scheduleId }),
+          }).then((response) => {
+            if (!response.ok) console.error("send-reminder: continuation returned a non-success status.");
+          }).catch(() => console.error("send-reminder: continuation request failed."));
+        });
+        waitUntil(Promise.all(continuations));
+      }
+
+      const unresolved = failed + deferred + processing + uncertain > 0;
+      const attempted = sent + failed + uncertain;
+      const status = !unresolved ? 200 : (attempted > 0 && sent === 0 && alreadyAccepted === 0 && failed === attempted && deferred === 0 && processing === 0 && uncertain === 0 ? 502 : 207);
+      return res.status(status).json({
+        message: unresolved ? "Reminder delivery is incomplete." : "Reminder delivery processing is complete.",
+        sent, alreadyAccepted, failed, deferred, processing, uncertain,
+        invalidRecipients: resolved.invalidRecipients,
+        ineligible,
+        continuing: canContinue,
+      });
     } catch (error) {
-      console.error("Error sending emails:", error);
-      res.status(500).json({ message: "Failed to send emails." });
+      console.error("send-reminder failed:", error?.message || "unknown error");
+      return res.status(500).json({ message: "Failed to process reminder delivery." });
     }
   });
-
   router.post("/user/attendance/bulk", verifyStaff, async (req, res) => {
     try {
       const { userIds } = req.body;

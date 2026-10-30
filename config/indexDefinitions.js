@@ -1,4 +1,4 @@
-// Single source of truth for the 18 indexes used both by index.js's runtime
+// Single source of truth for the 19 indexes used both by index.js's runtime
 // ensureIndexes() and the standalone scripts/ensure-indexes.js migration
 // script, so the two can never silently drift apart. Declarative (collection
 // + key spec) rather than just a list of closures, so the migration script
@@ -27,13 +27,15 @@ const INDEX_SPECS = [
   { collection: "schedules", key: { startDate: 1 } },
   { collection: "users", key: { nameLower: 1 } },
   { collection: "users", key: { emailLower: 1 } },
+  { collection: "reminderDeliveries", key: { scheduleId: 1, userId: 1 }, options: { unique: true, name: "uniq_reminder_schedule_user" } },
 ];
 
-function getIndexOps({ usersCollection, bookingMockCollection, schedulesCollection }) {
+function getIndexOps({ usersCollection, bookingMockCollection, schedulesCollection, reminderDeliveriesCollection }) {
   const collectionsByName = {
     users: usersCollection,
     bookingMock: bookingMockCollection,
     schedules: schedulesCollection,
+    reminderDeliveries: reminderDeliveriesCollection,
   };
   return INDEX_SPECS.map(({ collection, key, options }) => {
     const target = collectionsByName[collection];
