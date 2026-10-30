@@ -4,6 +4,14 @@ const sanitizeHtml = require("sanitize-html");
 const { waitUntil } = require("@vercel/functions");
 const { emailSender, emailSenderBulk, logEmailOutcome } = require("../emailSender");
 const { verifyToken, verifyAdmin, verifyStaff } = require("../middleware/auth");
+const {
+  parseDhakaDateTime,
+  evaluateLeadTime,
+  normalizeCourseName,
+  normalizeMode,
+  evaluateEntitlement,
+  isWholeCreditBalance,
+} = require("../utils/bookingEligibility");
 
 const router = Router();
 
@@ -285,8 +293,120 @@ async function resolveSeatRestoration({ booking, schedulesCollection, session })
 }
 
 module.exports = ({ usersCollection, schedulesCollection, bookingMockCollection, coursesCollection, client }) => {
+  // ---------------------------------------------------------------------------
+  // FIX-04 — booking validation and eligibility (Home + Test Center)
+  //
+  // The gate below replaces a client-controlled, expiry-blind, case-sensitive
+  // "purchased vs. lifetime-used" comparison that ran entirely outside the
+  // transaction. It now enforces, in this order:
+  //
+  //   403  the target student's account status is `completed`
+  //   400  the requested test instant parses as an exact Dhaka (UTC+06:00) time
+  //   400  the test is in the future, and >= 24 h away for non-admin callers
+  //   400  the course exists on the server and matches the request
+  //   400  a verifiable, unexpired MR covers this course + mode at test start
+  //   400  no active booking already holds that date/slot
+  //
+  // Entitlement is re-evaluated INSIDE the booking transaction against
+  // session-consistent data, and the mock-credit claim is conditional on the
+  // live account still being approved, so neither a stale approval nor a
+  // concurrent booking can be turned into an extra booking.
+  // ---------------------------------------------------------------------------
+  const COMPLETED_STATUS = "completed";
+  // Case-insensitive, whitespace-tolerant equivalent of `isCompletedAccount`,
+  // used as an update predicate so the credit claim itself cannot succeed after
+  // an account has been suspended in another request.
+  const COMPLETED_STATUS_FILTER = { $regex: /^\s*completed\s*$/i };
+
+  // One message for every entitlement failure: the caller learns "not
+  // eligible", never which MR row or which internal reason (no oracle).
+  const ENTITLEMENT_REJECTED_MESSAGE = "Insufficient mock tests available.";
+  const ACCOUNT_NOT_APPROVED_MESSAGE =
+    "Booking is only available for accounts with completed status.";
+  const LEAD_TIME_MESSAGE = "Bookings must be made at least 24 hours before the test.";
+  const PAST_TEST_MESSAGE = "The selected test time has already passed.";
+  const INVALID_TEST_TIME_MESSAGE = "The selected booking date or test time is invalid.";
+  const HOME_COURSE_UNVERIFIED_MESSAGE = "This course could not be verified. Please contact support.";
+  const SCHEDULE_COURSE_UNVERIFIED_MESSAGE =
+    "The course for this schedule could not be verified. Please contact support.";
+  const SCHEDULE_UNAVAILABLE_MESSAGE = "This schedule is no longer available for booking.";
+  const BOOKING_CONFLICT_MESSAGE = "Another booking for this account is in progress. Please try again.";
+  // D4-R03 — an absent test type is not a mode. It used to normalise to "" and
+  // match MR rows whose test type was also missing, authorising a booking on the
+  // strength of two empty strings.
+  const HOME_MODE_REQUIRED_MESSAGE = "Please select a valid test type for this Home test.";
+  const SCHEDULE_MODE_UNVERIFIED_MESSAGE =
+    "The test type for this schedule could not be verified. Please contact support.";
+
+  const isCompletedAccount = (user) => normalize(user && user.status) === COMPLETED_STATUS;
+
+  // D4-R02 — `users.mock` must be a whole number of credits before it can be
+  // spent: `$inc` cannot decrement a string, and claiming a fractional balance
+  // would leave a fractional (or negative) balance behind. "Insufficient" (0 or a
+  // negative whole number) is ordinary and silent; anything else that fails the
+  // whole-credit test is malformed data and is logged server-side.
+  const isPlainInsufficientBalance = (value) =>
+    typeof value === "number" && Number.isSafeInteger(value) && value <= 0;
+
+  /**
+   * Course-document lookup under the documented normalisation. The only alias is
+   * PTE === "Pearson PTE"; the returned document must normalise back to the
+   * requested name, so an unrelated course can never satisfy a lookup.
+   */
+  const findCourseByName = async (rawName) => {
+    const raw = String(rawName ?? "").trim();
+    if (!raw) return null;
+    const candidates = [raw];
+    if (normalizeCourseName(raw) === "pearson pte") candidates.push("Pearson PTE", "PTE");
+    const patterns = [...new Set(candidates)].map((n) => new RegExp(`^${escapeRegex(n)}$`, "i"));
+    const course = await coursesCollection.findOne({ name: { $in: patterns } });
+    if (!course) return null;
+    const stored = String(course.name ?? "").trim();
+    if (!stored) return null;
+    if (normalizeCourseName(stored) !== normalizeCourseName(raw)) return null;
+    return course;
+  };
+
+  /**
+   * Test Center course authority: the course document referenced by the
+   * schedule. No fallback to `schedule.name` — an unresolvable reference is
+   * refused so a schedule can never authorise a booking for a course that does
+   * not exist in the course table.
+   */
+  const resolveScheduleCourse = async (schedule) => {
+    const courseId = schedule && schedule.courseId;
+    if (!courseId || !ObjectId.isValid(String(courseId))) {
+      return { ok: false, reason: "invalid-course-reference" };
+    }
+    const course = await coursesCollection.findOne({ _id: new ObjectId(String(courseId)) });
+    if (!course) return { ok: false, reason: "missing-course-document" };
+    const name = String(course.name ?? "").trim();
+    if (!name) return { ok: false, reason: "invalid-course-document" };
+    return { ok: true, course, name };
+  };
+
+  /** Active booking history used by the entitlement reconstruction (no PII). */
+  const activeBookingsFor = async (userId, session) => {
+    const options = {
+      projection: { name: 1, testType: 1, bookingDate: 1, testTime: 1, startTime: 1, status: 1 },
+    };
+    if (session) options.session = session;
+    return bookingMockCollection.find({ userId, ...ACTIVE_BOOKING_FILTER }, options).toArray();
+  };
+
+  /**
+   * A lost race on a shared document is reported as a conflict; anything else is
+   * a genuine server failure and must stay a 5xx.
+   */
+  const isTransientTransactionError = (err) =>
+    (typeof err?.hasErrorLabel === "function" && err.hasErrorLabel("TransientTransactionError")) ||
+    err?.code === 112;
+
   router.post("/user/book-slot", verifyToken, async (req, res) => {
     try {
+      // One clock read per request: every lead-time comparison below uses the
+      // same instant, so a request can never straddle the 24-hour boundary.
+      const requestNowMs = Date.now();
       const {
         scheduleId, userId, slotId, testType, testSystem,
         name, location, bookingDate, testTime,
@@ -308,63 +428,97 @@ module.exports = ({ usersCollection, schedulesCollection, bookingMockCollection,
       }
 
       const user = await usersCollection.findOne({ _id: new ObjectId(userId) });
-      if (!user || user.mock <= 0) {
-        return res.status(400).json({ message: "Insufficient mock tests available." });
-      }
-
-      const resolvedMockType = (name || user.mockType || "").toString().trim();
-      const resolvedTestType = (testType || user.testType || "").toString().trim();
-
-      if (resolvedMockType && resolvedTestType) {
-        const lowerCourse = resolvedMockType.toLowerCase();
-        const lowerTestType = resolvedTestType.toLowerCase();
-
-        const purchasedForCourse = (Array.isArray(user.mocks) ? user.mocks : [])
-          .filter((m) => {
-            const mCourse = (m.mockType || "").toString().trim().toLowerCase();
-            const mType = (m.testType || "").toString().trim().toLowerCase();
-            return mCourse === lowerCourse && mType === lowerTestType;
-          })
-          .reduce((sum, m) => sum + (Number(m.mock) || 0), 0);
-
-        if (purchasedForCourse > 0) {
-          // Only active bookings consume purchased entitlement: a cancelled
-          // booking must not permanently burn an appointment the student paid
-          // for, otherwise cancelling then rebooking is refused.
-          const usedForCourse = await bookingMockCollection.countDocuments({
-            userId,
-            name: resolvedMockType,
-            testType: resolvedTestType,
-            ...ACTIVE_BOOKING_FILTER,
-          });
-
-          if (usedForCourse >= purchasedForCourse) {
-            return res.status(400).json({ message: "Insufficient mock tests available." });
-          }
+      // D4-R02 — a balance must be at least one whole credit. A value such as 0.5
+      // (or "2") used to pass `mock > 0` and then be decremented into a fractional
+      // or untypeable balance; it is now refused before any state is touched.
+      if (!user || !isWholeCreditBalance(user.mock)) {
+        if (user && !isPlainInsufficientBalance(user.mock)) {
+          console.warn(
+            `FIX-04 booking rejected (D4-R02 invalid mock balance): ${JSON.stringify(user.mock)}`
+          );
         }
+        return res.status(400).json({ message: ENTITLEMENT_REJECTED_MESSAGE });
       }
+
+      // FIX-04 — only approved students may book. The check is on the TARGET
+      // account, not the caller: an admin booking on a student's behalf does not
+      // exempt that student. 403 keeps "not approved" distinct from
+      // "no entitlement" (400).
+      if (!isCompletedAccount(user)) {
+        return res.status(403).json({ message: ACCOUNT_NOT_APPROVED_MESSAGE });
+      }
+
+      // Only a *verified* admin (live identity read in this request) may relax
+      // the 24-hour lead time, and only that rule.
+      const isVerifiedAdmin = req.user.role === "admin" && req.user.identityVerified === true;
 
       if (location === "Home") {
         if (!bookingDate || !testTime) {
           return res.status(400).json({ message: "Please select a booking date and test time." });
         }
 
-        const userTestType = testType || user.testType || "Unknown";
-        const userTestName = name || user.name || "Unknown";
+        // FIX-04 — the course must resolve to a real course document, and its
+        // canonical name is what gets stored. A client can therefore neither
+        // invent a course nor cause the student's personal name to be stored in
+        // the field the entitlement query itself filters on.
+        const course = await findCourseByName(name);
+        if (!course) {
+          return res.status(400).json({ message: HOME_COURSE_UNVERIFIED_MESSAGE });
+        }
+        const canonicalCourse = String(course.name).trim();
+        const canonicalMode = String(testType ?? "").trim();
+
+        // D4-R03 — a Home booking must state a mode. Previously a missing
+        // `testType` normalised to "" and then matched an MR row whose test type
+        // was also missing, so two empty strings authorised a real booking.
+        if (normalizeMode(canonicalMode) === "") {
+          console.warn("FIX-04 booking rejected (D4-R03 missing Home test type)");
+          return res.status(400).json({ message: HOME_MODE_REQUIRED_MESSAGE });
+        }
+
+        const normalizedCourse = normalizeCourseName(canonicalCourse);
+        const normalizedMode = normalizeMode(canonicalMode);
+
+        // FIX-04 — exact Dhaka (UTC+06:00) interpretation of the stored
+        // wall-clock values, independent of the server timezone.
+        const testStart = parseDhakaDateTime(bookingDate, testTime);
+        if (!testStart.ok) {
+          return res.status(400).json({ message: INVALID_TEST_TIME_MESSAGE });
+        }
+
+        const lead = evaluateLeadTime({
+          testStartMs: testStart.ms,
+          nowMs: requestNowMs,
+          isVerifiedAdmin,
+        });
+        if (!lead.ok) {
+          return res.status(400).json({
+            message: lead.reason === "past" ? PAST_TEST_MESSAGE : LEAD_TIME_MESSAGE,
+          });
+        }
 
         // Enforce the course-level Home eligibility rule before touching any
         // state, so a rejected booking never decrements the user's mock count.
         // Center bookings are intentionally never gated by this.
-        if (resolvedMockType) {
-          const course = await coursesCollection.findOne({
-            name: { $regex: `^${escapeRegex(resolvedMockType)}$`, $options: "i" },
+        if (!isHomeBookingAllowed(course, [testSystem, canonicalMode])) {
+          return res.status(400).json({
+            message:
+              "This course is not available for Home-based mock tests with the selected test system. Please book at a Test Center.",
           });
-          if (!isHomeBookingAllowed(course, [testSystem, userTestType])) {
-            return res.status(400).json({
-              message:
-                "This course is not available for Home-based mock tests with the selected test system. Please book at a Test Center.",
-            });
-          }
+        }
+
+        // FIX-04 — verifiable, unexpired MR for this exact course + mode at the
+        // scheduled test start, renewal-aware (see utils/bookingEligibility).
+        const entitlement = evaluateEntitlement({
+          mocks: user.mocks,
+          course: normalizedCourse,
+          mode: normalizedMode,
+          testStartMs: testStart.ms,
+          bookings: await activeBookingsFor(userId),
+        });
+        if (!entitlement.eligible) {
+          console.warn(`FIX-04 booking rejected (Home entitlement): ${entitlement.reason}`);
+          return res.status(400).json({ message: ENTITLEMENT_REJECTED_MESSAGE });
         }
 
         const existingBooking = await bookingMockCollection.findOne({
@@ -377,7 +531,7 @@ module.exports = ({ usersCollection, schedulesCollection, bookingMockCollection,
 
         const bookingRecord = {
           userId, location: "Home", status: "pending",
-          name: userTestName, testType: userTestType,
+          name: canonicalCourse, testType: canonicalMode,
           testSystem: testSystem || "N/A", bookingDate, testTime,
         };
 
@@ -385,28 +539,85 @@ module.exports = ({ usersCollection, schedulesCollection, bookingMockCollection,
         try {
           homeSession.startTransaction();
 
-          await bookingMockCollection.insertOne(bookingRecord, { session: homeSession });
+          // FIX-04 (correction C) — approval and entitlement are re-validated
+          // against transaction-consistent data, and the credit claim is itself
+          // conditional on the live account still being approved, so a stale
+          // approval can never be turned into a booking.
+          const freshUser = await usersCollection.findOne(
+            { _id: new ObjectId(userId) },
+            { session: homeSession }
+          );
+          if (!freshUser || !isCompletedAccount(freshUser)) {
+            await homeSession.abortTransaction();
+            return res.status(403).json({ message: ACCOUNT_NOT_APPROVED_MESSAGE });
+          }
+
+          // D4-R02 — re-validate the freshly read balance inside the transaction.
+          // Only a whole number of credits may be spent, so the conditional claim
+          // below can never leave a fractional or negative balance behind.
+          if (!isWholeCreditBalance(freshUser.mock)) {
+            console.warn(
+              `FIX-04 booking rejected (D4-R02 in-transaction mock balance): ${JSON.stringify(freshUser.mock)}`
+            );
+            await homeSession.abortTransaction();
+            return res.status(400).json({ message: ENTITLEMENT_REJECTED_MESSAGE });
+          }
+
+          const freshEntitlement = evaluateEntitlement({
+            mocks: freshUser.mocks,
+            course: normalizedCourse,
+            mode: normalizedMode,
+            testStartMs: testStart.ms,
+            bookings: await activeBookingsFor(userId, homeSession),
+          });
+          if (!freshEntitlement.eligible) {
+            console.warn(
+              `FIX-04 booking rejected (Home entitlement, in-transaction): ${freshEntitlement.reason}`
+            );
+            await homeSession.abortTransaction();
+            return res.status(400).json({ message: ENTITLEMENT_REJECTED_MESSAGE });
+          }
+
+          const racedDuplicate = await bookingMockCollection.findOne(
+            { userId, bookingDate, location: "Home", ...ACTIVE_BOOKING_FILTER },
+            { session: homeSession }
+          );
+          if (racedDuplicate) {
+            await homeSession.abortTransaction();
+            return res.status(400).json({ message: "You already have a test booked for this date." });
+          }
 
           const updateMock = await usersCollection.updateOne(
-            { _id: new ObjectId(userId), mock: { $gt: 0 } },
+            {
+              _id: new ObjectId(userId),
+              // D4-R02 — compare-and-set on the validated whole balance read in
+              // this transaction, not a loose `$gt: 0`: a concurrent spend or a
+              // fractional value can no longer be decremented, and the successful
+              // `$inc: -1` always leaves a whole, non-negative number.
+              mock: freshUser.mock,
+              status: COMPLETED_STATUS_FILTER,
+            },
             { $inc: { mock: -1 } },
             { session: homeSession }
           );
 
           if (updateMock.modifiedCount === 0) {
             await homeSession.abortTransaction();
-            await homeSession.endSession();
-            return res.status(400).json({ message: "Insufficient mock tests available." });
+            return res.status(400).json({ message: ENTITLEMENT_REJECTED_MESSAGE });
           }
 
+          await bookingMockCollection.insertOne(bookingRecord, { session: homeSession });
           await homeSession.commitTransaction();
-          await homeSession.endSession();
         } catch (err) {
           if (homeSession.inTransaction()) {
             try { await homeSession.abortTransaction(); } catch {}
           }
-          try { await homeSession.endSession(); } catch {}
+          if (isTransientTransactionError(err)) {
+            return res.status(409).json({ message: BOOKING_CONFLICT_MESSAGE });
+          }
           throw err;
+        } finally {
+          try { await homeSession.endSession(); } catch {}
         }
 
         res.json({ success: true, message: "Home test booked successfully", bookingRecord });
@@ -436,9 +647,68 @@ module.exports = ({ usersCollection, schedulesCollection, bookingMockCollection,
           return res.status(404).json({ message: "Schedule not found." });
         }
 
+        // FIX-04 — a cancelled schedule must not accept new bookings.
+        if (normalize(schedule.status) === CANCELLED_STATUS) {
+          return res.status(400).json({ message: SCHEDULE_UNAVAILABLE_MESSAGE });
+        }
+
         const selectedTimeSlot = schedule.timeSlots.find((slot) => slot.slotId === slotId);
         if (!selectedTimeSlot || Number(selectedTimeSlot.slot) < 1) {
           return res.status(400).json({ message: "Invalid or unavailable time slot selected." });
+        }
+
+        // FIX-04 — the schedule is the authority for course identity, not the
+        // request body and not a free-text fallback.
+        const scheduleCourse = await resolveScheduleCourse(schedule);
+        if (!scheduleCourse.ok) {
+          console.warn(`FIX-04 booking rejected (schedule course): ${scheduleCourse.reason}`);
+          return res.status(400).json({ message: SCHEDULE_COURSE_UNVERIFIED_MESSAGE });
+        }
+        const canonicalCourse = scheduleCourse.name;
+        if (normalizeCourseName(canonicalCourse) !== normalizeCourseName(name)) {
+          return res.status(400).json({ message: SCHEDULE_COURSE_UNVERIFIED_MESSAGE });
+        }
+
+        // Mode: the schedule's own value wins where present, so a stale client
+        // (which historically sent whichever MR row came first) cannot redefine
+        // the mode of the test it is booking.
+        const canonicalMode = String(schedule.testType ?? "").trim() || String(testType ?? "").trim();
+        const normalizedCourse = normalizeCourseName(canonicalCourse);
+        const normalizedMode = normalizeMode(canonicalMode);
+
+        // D4-R03 — if neither the schedule nor the request can establish a test
+        // type, fail safely instead of matching MR rows whose mode is also empty.
+        if (normalizedMode === "") {
+          console.warn("FIX-04 booking rejected (D4-R03 no verifiable Test Center test type)");
+          return res.status(400).json({ message: SCHEDULE_MODE_UNVERIFIED_MESSAGE });
+        }
+
+        const testStart = parseDhakaDateTime(schedule.startDate, selectedTimeSlot.startTime);
+        if (!testStart.ok) {
+          return res.status(400).json({ message: INVALID_TEST_TIME_MESSAGE });
+        }
+
+        const lead = evaluateLeadTime({
+          testStartMs: testStart.ms,
+          nowMs: requestNowMs,
+          isVerifiedAdmin,
+        });
+        if (!lead.ok) {
+          return res.status(400).json({
+            message: lead.reason === "past" ? PAST_TEST_MESSAGE : LEAD_TIME_MESSAGE,
+          });
+        }
+
+        const entitlement = evaluateEntitlement({
+          mocks: user.mocks,
+          course: normalizedCourse,
+          mode: normalizedMode,
+          testStartMs: testStart.ms,
+          bookings: await activeBookingsFor(userId),
+        });
+        if (!entitlement.eligible) {
+          console.warn(`FIX-04 booking rejected (Test Center entitlement): ${entitlement.reason}`);
+          return res.status(400).json({ message: ENTITLEMENT_REJECTED_MESSAGE });
         }
 
         const existingBooking = await bookingMockCollection.findOne({
@@ -449,6 +719,7 @@ module.exports = ({ usersCollection, schedulesCollection, bookingMockCollection,
         }
 
         const session = client.startSession();
+        let bookingRecord;
 
         try {
           session.startTransaction();
@@ -483,15 +754,74 @@ module.exports = ({ usersCollection, schedulesCollection, bookingMockCollection,
             return res.status(400).json({ message: "This time slot was just taken. Please pick another." });
           }
 
+          // FIX-04 (correction C) — approval and entitlement are re-validated
+          // against transaction-consistent data before the credit is claimed, so
+          // a concurrent suspension or a concurrent booking cannot be converted
+          // into an extra booking.
+          const freshUser = await usersCollection.findOne(
+            { _id: new ObjectId(userId) },
+            { session }
+          );
+          if (!freshUser || !isCompletedAccount(freshUser)) {
+            await session.abortTransaction();
+            return res.status(403).json({ message: ACCOUNT_NOT_APPROVED_MESSAGE });
+          }
+
+          // D4-R02 — same whole-credit re-validation as the Home branch, against
+          // transaction-consistent data.
+          if (!isWholeCreditBalance(freshUser.mock)) {
+            console.warn(
+              `FIX-04 booking rejected (D4-R02 in-transaction mock balance): ${JSON.stringify(freshUser.mock)}`
+            );
+            await session.abortTransaction();
+            return res.status(400).json({ message: ENTITLEMENT_REJECTED_MESSAGE });
+          }
+
+          const freshEntitlement = evaluateEntitlement({
+            mocks: freshUser.mocks,
+            course: normalizedCourse,
+            mode: normalizedMode,
+            testStartMs: testStart.ms,
+            bookings: await activeBookingsFor(userId, session),
+          });
+          if (!freshEntitlement.eligible) {
+            console.warn(
+              `FIX-04 booking rejected (Test Center entitlement, in-transaction): ${freshEntitlement.reason}`
+            );
+            await session.abortTransaction();
+            return res.status(400).json({ message: ENTITLEMENT_REJECTED_MESSAGE });
+          }
+
+          const racedDuplicate = await bookingMockCollection.findOne(
+            { userId, scheduleId, bookingDate: schedule.startDate, slotId, ...ACTIVE_BOOKING_FILTER },
+            { session }
+          );
+          if (racedDuplicate) {
+            await session.abortTransaction();
+            return res.status(400).json({ message: "You have already booked a slot for this date." });
+          }
+
           const userUpdate = await usersCollection.updateOne(
-            { _id: new ObjectId(userId), mock: { $gt: 0 } },
+            {
+              _id: new ObjectId(userId),
+              // D4-R02 — compare-and-set on the validated whole balance (see the
+              // Home branch). The status predicate is unchanged.
+              mock: freshUser.mock,
+              status: COMPLETED_STATUS_FILTER,
+            },
             { $inc: { mock: -1 } },
             { session }
           );
-          if (userUpdate.modifiedCount === 0) throw new Error("Failed to update user mock count");
+          if (userUpdate.modifiedCount === 0) {
+            // A refused credit claim is a legitimate "not eligible" outcome (the
+            // balance or the account changed under us), not a server failure.
+            await session.abortTransaction();
+            return res.status(400).json({ message: ENTITLEMENT_REJECTED_MESSAGE });
+          }
 
-          const bookingRecord = {
-            userId, scheduleId, slotId, status: "pending", name, testType,
+          bookingRecord = {
+            userId, scheduleId, slotId, status: "pending",
+            name: canonicalCourse, testType: canonicalMode,
             testSystem: testSystem || null, bookingDate: schedule.startDate,
             startTime: selectedTimeSlot.startTime, endTime: selectedTimeSlot.endTime,
             location: "Test Center",
@@ -500,9 +830,6 @@ module.exports = ({ usersCollection, schedulesCollection, bookingMockCollection,
           await bookingMockCollection.insertOne(bookingRecord, { session });
 
           await session.commitTransaction();
-
-          res.json({ success: true, message: "Test Center test booked successfully", bookingRecord });
-          waitUntil(sendBookingConfirmationEmail(user, bookingRecord));
         } catch (err) {
           if (session.inTransaction()) {
             try { await session.abortTransaction(); } catch {}
@@ -510,14 +837,18 @@ module.exports = ({ usersCollection, schedulesCollection, bookingMockCollection,
           // Two transactions racing on the SAME document (not just the same
           // slotId query) can also lose as a WriteConflict/TransientTransactionError
           // thrown straight out of updateOne, rather than as modifiedCount 0 above.
-          // Treat that the same way instead of letting it fall through as a 500.
-          if (typeof err?.hasErrorLabel === "function" && err.hasErrorLabel("TransientTransactionError")) {
-            return res.status(409).json({ message: "This time slot was just taken. Please pick another." });
+          // Treat that as a conflict, never as a server error.
+          if (isTransientTransactionError(err)) {
+            return res.status(409).json({ message: BOOKING_CONFLICT_MESSAGE });
           }
           throw err;
         } finally {
           try { await session.endSession(); } catch {}
         }
+
+        // Email only after a committed transaction.
+        res.json({ success: true, message: "Test Center test booked successfully", bookingRecord });
+        waitUntil(sendBookingConfirmationEmail(user, bookingRecord));
       } else {
         return res.status(400).json({
           message: "Invalid location type. Must be 'Home' or 'Test Center'.",

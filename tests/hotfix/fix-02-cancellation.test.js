@@ -91,6 +91,7 @@ let adminB;
 let bdm;
 let teacher;
 let capStudent;
+let bookableCourse;
 
 const tokenFor = (user, overrides = {}) =>
   jwt.sign(
@@ -135,6 +136,74 @@ async function seedUser(overrides = {}) {
 
 /** A fresh student per test: no test may depend on another test's bookings. */
 const newStudent = (overrides = {}) => seedUser({ name: "Synthetic Student", ...overrides });
+
+// ---------------------------------------------------------------------------
+// FIX-04 fixture support (Day 4)
+//
+// POST /user/book-slot now requires an approved account, a future test date and
+// a verifiable MR row that covers the requested course + mode at the test start.
+// These helpers supply exactly that, so the cancellation assertions above stay
+// untouched: they test cancellation, not eligibility.
+// ---------------------------------------------------------------------------
+
+const DHAKA_OFFSET_MS = 6 * 60 * 60 * 1000;
+
+/** A Dhaka wall-clock date string N days from now (never in the past). */
+const dhakaDateIn = (days) =>
+  new Date(Date.now() + days * 24 * 60 * 60 * 1000 + DHAKA_OFFSET_MS).toISOString().slice(0, 10);
+
+/** An ISO instant N days from now. */
+const dhakaIsoIn = (days) => new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+
+/** A course document the booking gate can resolve. */
+async function seedCourse(overrides = {}) {
+  const doc = {
+    _id: new ObjectId(),
+    name: "IELTS",
+    homeBasedSystems: ["Computer-Based"],
+    ...overrides,
+  };
+  await coursesCollection.insertOne(doc);
+  return doc;
+}
+
+/**
+ * A student who is allowed to book: approved account, positive balance and one
+ * MR row for IELTS / Computer-Based that stays valid well past the test date.
+ */
+const newBookingStudent = (overrides = {}) =>
+  seedUser({
+    name: "Synthetic Booking Student",
+    status: "completed",
+    mock: 5,
+    totalMock: 5,
+    mockType: "IELTS",
+    testType: "Computer-Based",
+    mocks: [
+      {
+        mockType: "IELTS",
+        testType: "Computer-Based",
+        testSystem: "Academic",
+        mock: 5,
+        transactionId: `MR-${crypto.randomBytes(6).toString("hex")}`,
+        mrValidation: "6 months",
+        mrValidationExpiry: dhakaIsoIn(180),
+        createdAt: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
+      },
+    ],
+    ...overrides,
+  });
+
+/** A schedule the booking gate can resolve: future date, real course document. */
+const bookableSchedule = (overrides = {}) =>
+  newSchedule({
+    courseId: String(bookableCourse._id),
+    name: "IELTS",
+    testType: "Computer-Based",
+    startDate: dhakaDateIn(7),
+    endDate: dhakaDateIn(7),
+    ...overrides,
+  });
 
 /** A fresh schedule per seat-arithmetic test: exact slot numbers, no drift. */
 async function newSchedule(overrides = {}) {
@@ -227,16 +296,31 @@ before(async () => {
   teacher = await seedUser({ name: "Synthetic Teacher", email: "teacher.cancel@synthetic.invalid", role: "teacher" });
 
   // Owns a purchased single-mock entitlement: proves the per-course cap counts
-  // ACTIVE bookings only.
+  // ACTIVE bookings only. FIX-04: the row must be verifiable (expiry recorded)
+  // and the account approved, otherwise the booking gate refuses before the
+  // cancellation rule under test is ever reached.
   capStudent = await seedUser({
     name: "Synthetic Cap Student",
     email: "student.cap@synthetic.invalid",
+    status: "completed",
     mock: 2,
     totalMock: 2,
     mockType: "IELTS",
-    testType: "Academic",
-    mocks: [{ mockType: "IELTS", testType: "Academic", mock: 1 }],
+    testType: "Computer-Based",
+    mocks: [
+      {
+        mockType: "IELTS",
+        testType: "Computer-Based",
+        mock: 1,
+        transactionId: `MR-${crypto.randomBytes(6).toString("hex")}`,
+        mrValidation: "6 months",
+        mrValidationExpiry: dhakaIsoIn(180),
+        createdAt: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
+      },
+    ],
   });
+
+  bookableCourse = await seedCourse();
 
   const app = createApp({
     usersCollection,
@@ -593,7 +677,7 @@ test("F2-06c cancelled bookings are excluded from the operational rosters", asyn
 // ---------------------------------------------------------------------------
 
 test("F2-07a a cancelled Home booking no longer blocks that date", async () => {
-  const student = await newStudent();
+  const student = await newBookingStudent();
   const booking = await seedBooking({
     userId: String(student._id),
     location: "Home",
@@ -607,10 +691,10 @@ test("F2-07a a cancelled Home booking no longer blocks that date", async () => {
     body: {
       userId: String(student._id),
       location: "Home",
-      bookingDate: "2026-04-25",
+      bookingDate: dhakaDateIn(3),
       testTime: "10:00",
       name: "IELTS",
-      testType: "Academic",
+      testType: "Computer-Based",
     },
   });
 
@@ -624,8 +708,8 @@ test("F2-07a a cancelled Home booking no longer blocks that date", async () => {
 });
 
 test("F2-07b a cancelled Test Center booking no longer blocks that slot", async () => {
-  const student = await newStudent();
-  const schedule = await newSchedule();
+  const student = await newBookingStudent();
+  const schedule = await bookableSchedule();
   const booking = await seedCenterBooking({ student, schedule, slotId: "2" });
   assert.equal((await cancel(booking._id)).status, 200);
 
@@ -673,10 +757,10 @@ test("F2-07c the per-course entitlement cap counts active bookings only", async 
     body: {
       userId: String(capStudent._id),
       location: "Home",
-      bookingDate: "2026-04-27",
+      bookingDate: dhakaDateIn(3),
       testTime: "10:00",
       name: "IELTS",
-      testType: "Academic",
+      testType: "Computer-Based",
     },
   });
   assert.equal(first.status, 200, "the cancelled booking must not consume the purchased mock");
@@ -689,10 +773,10 @@ test("F2-07c the per-course entitlement cap counts active bookings only", async 
     body: {
       userId: String(capStudent._id),
       location: "Home",
-      bookingDate: "2026-04-28",
+      bookingDate: dhakaDateIn(4),
       testTime: "10:00",
       name: "IELTS",
-      testType: "Academic",
+      testType: "Computer-Based",
     },
   });
   assert.equal(second.status, 400);
@@ -834,8 +918,8 @@ test("F2-09d a missing user document rolls the whole cancellation back", async (
 // ---------------------------------------------------------------------------
 
 test("R07 a Test Center booking decrements the booked slot, not the first slot", async () => {
-  const student = await newStudent();
-  const schedule = await newSchedule();
+  const student = await newBookingStudent();
+  const schedule = await bookableSchedule();
 
   const res = await api("POST", "/user/book-slot", {
     token: tokenFor(student),
@@ -863,14 +947,14 @@ test("R07 the atomic guard still refuses to oversell the last seat of the chosen
   // is opened, so the positional guard is exercised the way production exercises
   // it: two students racing for the last seat of slot "2". Exactly one may win,
   // and the winner must take the seat from slot "2" — never from slot "1".
-  const schedule = await newSchedule({
+  const schedule = await bookableSchedule({
     timeSlots: [
       { slotId: "1", startTime: "09:00:00", endTime: "12:00:00", slot: 5, totalSlot: 5 },
       { slotId: "2", startTime: "13:00:00", endTime: "16:00:00", slot: 1, totalSlot: 1 },
     ],
   });
-  const first = await newStudent();
-  const second = await newStudent();
+  const first = await newBookingStudent();
+  const second = await newBookingStudent();
 
   const book = (student) =>
     api("POST", "/user/book-slot", {
