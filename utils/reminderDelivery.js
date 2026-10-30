@@ -53,7 +53,7 @@ function buildReminderEmail({ user, schedule, booking, slot }) {
 <li>Venue: ${escapeHtml(venue || "As arranged")}</li></ul>
 <h3>Reporting instructions</h3><ul><li>Please arrive 30 minutes before your test time.</li>
 <li>Bring a valid photo ID (Passport/NID) matching your account information.</li>
-<li>Bring your own stationery items.</li></ul><p>Best regards,<br>The Luminedge Team</p></div>`;
+<li>Bring your own stationery items.</li></ul><p>For assistance, contact Luminedge at 01400-403485.</p><p>Best regards,<br>The Luminedge Team</p></div>`;
   return { subject, message };
 }
 

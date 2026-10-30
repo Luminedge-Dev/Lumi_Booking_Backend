@@ -264,7 +264,7 @@ module.exports = ({ usersCollection }) => {
                   </ul>
                 </ul>
                 <p>We recommend booking your mock tests early to secure your preferred schedule.</p>
-                <p>For any assistance, feel free to contact us at 📞 01400-406374 | 01400-403475 | 01400-403486 | 01400-403487 | 01400-403493 | 01400-403494.</p>
+                <p>For any assistance, feel free to contact us at 📞 01400-403485 | 01400-403475 | 01400-403486 | 01400-403487 | 01400-403493 | 01400-403494.</p>
                 <p>Thank you for choosing Luminedge. We are committed to supporting your success!</p>
                 <p>Best regards,</p>
                 <p>The Luminedge Team</p>

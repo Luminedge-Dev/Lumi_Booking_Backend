@@ -62,7 +62,7 @@ module.exports = ({ usersCollection }) => {
         <p>Thank you for registering on the Luminedge Mock Booking Portal. Your account has been successfully created!</p>
         <p>Our team will now verify your proof of payment (Money Receipt) details. Once verified, you will be granted access to book your mock tests directly through the portal.</p>
         <p>If any additional information is required, we will contact you promptly. Please allow up to 48 hours for the verification process.</p>
-        <p>For any urgent queries, feel free to reach out to us at 📞 01400-406374 | 01400-403475 | 01400-403486 | 01400-403487 | 01400-403493 | 01400-403494.</p>
+        <p>For any urgent queries, feel free to reach out to us at 📞 01400-403485 | 01400-403475 | 01400-403486 | 01400-403487 | 01400-403493 | 01400-403494.</p>
         <p>Thank you for choosing Luminedge, and we wish you the best in your test preparation journey!</p>
         <p>Best regards,</p>
         <p>The Luminedge Team</p>

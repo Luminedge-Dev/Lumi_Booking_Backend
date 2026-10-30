@@ -118,7 +118,9 @@ test("template escapes dynamic text, uses the actual date/slot and omits obsolet
   assert.match(result.message, /&lt;script&gt;/);
   assert.match(result.message, /April 5, 2030/);
   assert.match(result.message, /13:00:00–16:00:00/);
-  assert.doesNotMatch(result.message, /tomorrow|Gawsia|01400|reschedul/i);
+  assert.match(result.message, /01400-403485/);
+  assert.doesNotMatch(result.message, /01400-406374|743 Satmasjid/);
+  assert.doesNotMatch(result.message, /tomorrow|Gawsia|reschedul/i);
 });
 
 test("redacted reminder SMTP failures never log recipient addresses", async () => {

@@ -51,7 +51,7 @@ async function sendBookingConfirmationEmail(user, bookingRecord) {
             <li>Test Time: ${testTime}</li>
             <li>Test Location: ${safe(bookingRecord.location)}</li>
             <li>Reporting Time: 30 minutes before Test Time</li>
-            <li>Office Address: Level 12, Gawsia Twin Peak, 743 Satmasjid Road, Dhanmondi 9/A, Dhaka-1205, Bangladesh.</li>
+            <li>Office Address: 42 Satmasjid Road, Dhanmondi.</li>
           </ul>
           <p><strong>Important Instructions:</strong></p>
           <ul>
@@ -71,7 +71,7 @@ async function sendBookingConfirmationEmail(user, bookingRecord) {
           <p>To facilitate a smooth check-in process, kindly present your valid photo ID (Passport/NID) voucher to our office executive upon arrival. This step is crucial to confirm your eligibility for the mock test.</p>
           <p>We sincerely appreciate your cooperation in adhering to these guidelines. Your punctuality and preparedness will contribute to a successful and efficient mock test experience.</p>
           <p>Thank you for choosing Luminedge for your test preparation needs. If you have any questions or require further assistance, please do not hesitate to contact us.</p>
-          <p>📞 01400-406374 | 01400-403475 | 01400-403486 | 01400-403487 | 01400-403493 | 01400-403494</p>
+          <p>📞 01400-403485 | 01400-403475 | 01400-403486 | 01400-403487 | 01400-403493 | 01400-403494</p>
           <p>We wish you the best for your mock test!</p>
           <p>Best regards,</p>
           <p>The Luminedge Team</p>
@@ -1413,7 +1413,7 @@ module.exports = ({ usersCollection, schedulesCollection, bookingMockCollection,
               <li>Reach out to us if you need additional resources or support to enhance your preparation.</li>
             </ul>
             <p>Your insights help us improve our services. If you have any feedback about the test experience, feel free to share it with us at:</p>
-            <p>📞 01400-406374 | 01400-403475 | 01400-403486 | 01400-403487 | 01400-403493 | 01400-403494</p>
+            <p>📞 01400-403485 | 01400-403475 | 01400-403486 | 01400-403487 | 01400-403493 | 01400-403494</p>
             <p>We wish you the best of luck as you continue your journey toward success!</p>
             <p>Best regards,</p>
             <p>The Luminedge Team</p>
@@ -1431,7 +1431,7 @@ module.exports = ({ usersCollection, schedulesCollection, bookingMockCollection,
               <li>Reach out to our expert instructors for personalized guidance and strategies to enhance your test readiness.</li>
             </ul>
             <p>We're here to support you in achieving your goals. If you need assistance or have any questions, feel free to contact us at:</p>
-            <p>📞 01400-406374 | 01400-403475 | 01400-403486 | 01400-403487 | 01400-403493 | 01400-403494</p>
+            <p>📞 01400-403485 | 01400-403475 | 01400-403486 | 01400-403487 | 01400-403493 | 01400-403494</p>
             <p>Your success is our priority, and we're committed to helping you every step of the way!</p>
             <p>Best regards,</p>
             <p>The Luminedge Team</p>
