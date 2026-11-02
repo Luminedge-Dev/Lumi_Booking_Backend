@@ -93,13 +93,17 @@ const RETRYABLE_CODES = new Set([
   return false;
 };
 
-const sendWithRetry = async (payload, retries = 2) => {
+const sendWithRetry = async (payload, retries = 2, options = {}) => {
   for (let i = 0; i <= retries; i++) {
     try {
       return await getTransporter().sendMail(payload);
     } catch (err) {
       if (i === retries || !isRetryable(err)) throw err;
-      console.warn(`📨 Retry ${i + 1} failed: ${err.message}`);
+      if (options.redactRecipient === true) {
+        console.warn(`📨 Retry ${i + 1} failed:`, err.code || err.responseCode || "smtp_error");
+      } else {
+        console.warn(`📨 Retry ${i + 1} failed: ${err.message}`);
+      }
       await delay(1000 * (i + 1));
     }
   }
@@ -144,15 +148,23 @@ const emailSender = async (subject, to, content, attachments, options) => {
         html: content,
         messageId,
         ...(attachments?.length ? { attachments: mapAttachments(attachments) } : {}),
-      }),
+      }, 2, options),
       deadlineMs,
       `Email send to ${to} exceeded ${deadlineMs}ms deadline`
     );
 
-    console.log(`📩 Email sent to ${to}: ${info?.messageId || messageId}`);
+    if (options?.redactRecipient === true) {
+      console.log("📩 Email accepted by SMTP.");
+    } else {
+      console.log(`📩 Email sent to ${to}: ${info?.messageId || messageId}`);
+    }
     return { success: true, info };
   } catch (error) {
-    console.error(`❌ Final email failure to ${to}:`, error.message);
+    if (options?.redactRecipient === true) {
+      console.error("❌ Final email failure:", error.code || error.responseCode || "smtp_error");
+    } else {
+      console.error(`❌ Final email failure to ${to}:`, error.message);
+    }
     return { success: false, error };
   }
 };
@@ -174,7 +186,7 @@ const BULK_ITEM_DEADLINE_MS = 15_000;
 
 const BULK_CONCURRENCY = 3;
 
-const emailSenderBulk = async (items, gapMs = 550) => {
+const emailSenderBulk = async (items, gapMs = 550, sendOptions = {}) => {
   if (!process.env.SMTP_HOST || !smtpUser() || !smtpPass()) {
     return items.map(() => ({
       success: false,
@@ -202,6 +214,7 @@ const emailSenderBulk = async (items, gapMs = 550) => {
       const { subject, to, content, attachments } = items[i];
       results[i] = await emailSender(subject, to, content, attachments, {
         deadlineMs: BULK_ITEM_DEADLINE_MS,
+        redactRecipient: sendOptions.redactRecipient === true,
       });
       // Skip the gap when nothing remains in the shared queue — delaying
       // after the last item just stretches total wall time for no benefit.
