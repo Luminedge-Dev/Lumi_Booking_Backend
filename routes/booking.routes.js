@@ -1512,12 +1512,20 @@ module.exports = ({ usersCollection, schedulesCollection, bookingMockCollection,
 
     try {
       if (!await reminderDelivery.hasRequiredUniqueIndex(reminderDeliveriesCollection)) {
-        return res.status(503).json({ message: "Reminder delivery is temporarily unavailable." });
+        console.error("[send-reminder] REMINDER_INDEX_NOT_READY: reminderDeliveries unique compound index {scheduleId,userId} is missing or inaccessible.");
+        return res.status(503).json({ message: "Reminder delivery is temporarily unavailable.", errorCategory: "REMINDER_INDEX_NOT_READY" });
       }
       const publicApiUrl = reminderDelivery.configuredPublicApiUrl(process.env.PUBLIC_API_URL);
       const continuationSecret = process.env.CRON_SECRET;
-      if (!publicApiUrl || !continuationSecret) {
-        return res.status(503).json({ message: "Reminder delivery is temporarily unavailable." });
+      if (!publicApiUrl) {
+        const rawUrl = process.env.PUBLIC_API_URL;
+        const category = rawUrl ? "REMINDER_PUBLIC_API_URL_INVALID" : "REMINDER_PUBLIC_API_URL_MISSING";
+        console.error(`[send-reminder] ${category}: PUBLIC_API_URL is ${rawUrl ? "present but invalid" : "not configured"}.`);
+        return res.status(503).json({ message: "Reminder delivery is temporarily unavailable.", errorCategory: category });
+      }
+      if (!continuationSecret) {
+        console.error("[send-reminder] REMINDER_CONTINUATION_SECRET_MISSING: CRON_SECRET is not configured.");
+        return res.status(503).json({ message: "Reminder delivery is temporarily unavailable.", errorCategory: "REMINDER_CONTINUATION_SECRET_MISSING" });
       }
       const schedule = await schedulesCollection.findOne({ _id: new ObjectId(scheduleId) });
       if (!schedule) return res.status(404).json({ message: "Schedule not found." });
