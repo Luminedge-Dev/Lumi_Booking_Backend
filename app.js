@@ -77,7 +77,7 @@ module.exports = function createApp(collections) {
         if (!origin || ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
         return cb(new Error("Not allowed by CORS"));
       },
-      methods: ["GET", "POST", "PUT", "DELETE"],
+      methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
       credentials: true,
     })
   );

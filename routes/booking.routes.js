@@ -356,13 +356,14 @@ module.exports = ({ usersCollection, schedulesCollection, bookingMockCollection,
    * PTE === "Pearson PTE"; the returned document must normalise back to the
    * requested name, so an unrelated course can never satisfy a lookup.
    */
-  const findCourseByName = async (rawName) => {
+  const findCourseByName = async (rawName, session) => {
     const raw = String(rawName ?? "").trim();
     if (!raw) return null;
     const candidates = [raw];
     if (normalizeCourseName(raw) === "pearson pte") candidates.push("Pearson PTE", "PTE");
-    const patterns = [...new Set(candidates)].map((n) => new RegExp(`^${escapeRegex(n)}$`, "i"));
-    const course = await coursesCollection.findOne({ name: { $in: patterns } });
+    const patterns = [...new Set(candidates)].map((n) => new RegExp("^" + escapeRegex(n) + "$", "i"));
+    const options = session ? { session } : {};
+    const course = await coursesCollection.findOne({ name: { $in: patterns } }, options);
     if (!course) return null;
     const stored = String(course.name ?? "").trim();
     if (!stored) return null;
@@ -376,12 +377,13 @@ module.exports = ({ usersCollection, schedulesCollection, bookingMockCollection,
    * refused so a schedule can never authorise a booking for a course that does
    * not exist in the course table.
    */
-  const resolveScheduleCourse = async (schedule) => {
+  const resolveScheduleCourse = async (schedule, session) => {
     const courseId = schedule && schedule.courseId;
     if (!courseId || !ObjectId.isValid(String(courseId))) {
       return { ok: false, reason: "invalid-course-reference" };
     }
-    const course = await coursesCollection.findOne({ _id: new ObjectId(String(courseId)) });
+    const options = session ? { session } : {};
+    const course = await coursesCollection.findOne({ _id: new ObjectId(String(courseId)) }, options);
     if (!course) return { ok: false, reason: "missing-course-document" };
     const name = String(course.name ?? "").trim();
     if (!name) return { ok: false, reason: "invalid-course-document" };
@@ -581,15 +583,9 @@ module.exports = ({ usersCollection, schedulesCollection, bookingMockCollection,
             return res.status(400).json({ message: ENTITLEMENT_REJECTED_MESSAGE });
           }
 
-          const racedDuplicate = await bookingMockCollection.findOne(
-            { userId, bookingDate, location: "Home", ...ACTIVE_BOOKING_FILTER },
-            { session: homeSession }
-          );
-          if (racedDuplicate) {
-            await homeSession.abortTransaction();
-            return res.status(400).json({ message: "You already have a test booked for this date." });
-          }
-
+          // Per-student transactional serialization: lock and claim mock balance
+          // before checking duplicate so that concurrent Home bookings or reschedules
+          // for the same student are serialized at the database level.
           const updateMock = await usersCollection.updateOne(
             {
               _id: new ObjectId(userId),
@@ -600,13 +596,25 @@ module.exports = ({ usersCollection, schedulesCollection, bookingMockCollection,
               mock: freshUser.mock,
               status: COMPLETED_STATUS_FILTER,
             },
-            { $inc: { mock: -1 } },
+            {
+              $inc: { mock: -1 },
+              $set: { lastBookingActivityAt: new Date() },
+            },
             { session: homeSession }
           );
 
           if (updateMock.modifiedCount === 0) {
             await homeSession.abortTransaction();
             return res.status(400).json({ message: ENTITLEMENT_REJECTED_MESSAGE });
+          }
+
+          const racedDuplicate = await bookingMockCollection.findOne(
+            { userId, bookingDate, location: "Home", ...ACTIVE_BOOKING_FILTER },
+            { session: homeSession }
+          );
+          if (racedDuplicate) {
+            await homeSession.abortTransaction();
+            return res.status(400).json({ message: "You already have a test booked for this date." });
           }
 
           await bookingMockCollection.insertOne(bookingRecord, { session: homeSession });
@@ -863,6 +871,544 @@ module.exports = ({ usersCollection, schedulesCollection, bookingMockCollection,
     }
   });
 
+  // ---------------------------------------------------------------------------
+  // STUDENT SELF-SERVICE RESCHEDULING (R02)
+  //
+  // Allows an eligible student to transfer an active, pending mock test reservation
+  // to a new slot or date without consuming an additional mock test credit.
+  // Hardened with:
+  //   - FIX A: Ownership verified BEFORE evaluating idempotency
+  //   - FIX B: Home duplicate rule excludes current booking while prohibiting other active bookings on same date
+  //   - FIX C: Fully transaction-consistent re-reading & validation inside transaction
+  //   - FIX D & FIX 1: Durable idempotency with request payload hash, historical replay protection & stale key erasure
+  //   - FIX 2: Per-student transactional serialization point preventing concurrent duplicate Home bookings
+  //   - FIX E: Safe split retries & operation-ID reconciliation on uncertain commits
+  // ---------------------------------------------------------------------------
+
+  const isUnknownCommitResult = (err) =>
+    typeof err?.hasErrorLabel === "function" && err.hasErrorLabel("UnknownTransactionCommitResult");
+
+  const toDhakaDate = (val) => {
+    if (!val) return "";
+    if (typeof val === "string" && /^\d{4}-\d{2}-\d{2}$/.test(val.trim())) return val.trim();
+    const d = new Date(val);
+    if (isNaN(d.getTime())) return "";
+    return new Date(d.getTime() + 6 * 3600 * 1000).toISOString().slice(0, 10);
+  };
+
+  router.patch("/user/bookings/:bookingId/reschedule", bookingFrozen, verifyToken, async (req, res) => {
+    try {
+      const { bookingId } = req.params;
+      if (!ObjectId.isValid(bookingId)) {
+        return res.status(400).json({ message: "Invalid booking ID format." });
+      }
+
+      const idempotencyKey = String(req.headers["idempotency-key"] || req.body?.idempotencyKey || "").trim();
+
+      // Read booking outside transaction for initial pre-flight check
+      const initialBooking = await bookingMockCollection.findOne({ _id: new ObjectId(bookingId) });
+      if (!initialBooking || isCancelledBooking(initialBooking)) {
+        return res.status(404).json({ message: "Active booking not found." });
+      }
+
+      // -----------------------------------------------------------------------
+      // FIX A: STRICT OWNERSHIP CHECK BEFORE IDEMPOTENCY EVALUATION
+      // -----------------------------------------------------------------------
+      if (initialBooking.userId !== String(req.user.userId)) {
+        return res.status(403).json({ message: "You are not authorized to reschedule this booking." });
+      }
+
+      // Compute canonical request payload hash for durable idempotency
+      const canonicalPayload = {
+        location: initialBooking.location,
+        newScheduleId: req.body?.newScheduleId ? String(req.body.newScheduleId).trim() : null,
+        newSlotId: req.body?.newSlotId !== undefined && req.body?.newSlotId !== null ? String(req.body.newSlotId).trim() : null,
+        newBookingDate: req.body?.newBookingDate ? String(req.body.newBookingDate).trim() : null,
+        newTestTime: req.body?.newTestTime ? String(req.body.newTestTime).trim() : null,
+      };
+      const requestHash = crypto.createHash("sha256").update(JSON.stringify(canonicalPayload)).digest("hex");
+
+      // -----------------------------------------------------------------------
+      // FIX D & FIX 1: DURABLE IDEMPOTENCY EVALUATION WITH HISTORICAL CONSISTENCY
+      // -----------------------------------------------------------------------
+      if (idempotencyKey) {
+        const historyEntry = (initialBooking.rescheduleHistory || []).find(
+          (h) => h && h.idempotencyKey === idempotencyKey
+        );
+        const isCurrentKey = initialBooking.lastIdempotencyKey === idempotencyKey;
+
+        if (isCurrentKey) {
+          const matchesCurrentState = initialBooking.location === "Test Center"
+            ? String(initialBooking.scheduleId) === String(canonicalPayload.newScheduleId) &&
+              String(initialBooking.slotId) === String(canonicalPayload.newSlotId)
+            : toDhakaDate(initialBooking.bookingDate) === canonicalPayload.newBookingDate &&
+              String(initialBooking.testTime).trim() === String(canonicalPayload.newTestTime).trim();
+
+          if (initialBooking.lastIdempotencyHash === requestHash && matchesCurrentState) {
+            return res.status(200).json({
+              success: true,
+              message: "Booking successfully rescheduled.",
+              bookingRecord: initialBooking,
+              idempotent: true,
+            });
+          }
+
+          if (initialBooking.lastIdempotencyHash !== requestHash) {
+            return res.status(409).json({
+              message: "Idempotency key has already been used with different request parameters.",
+            });
+          }
+
+          return res.status(409).json({
+            message: "Idempotency key was used for a previous reschedule operation.",
+          });
+        }
+
+        if (historyEntry) {
+          return res.status(409).json({
+            message: "Idempotency key was used for a previous reschedule operation.",
+          });
+        }
+      }
+
+      // Initial attendance and status checks
+      if (hasRecordedAttendance(initialBooking)) {
+        return res.status(409).json({ message: "Cannot reschedule a booking with recorded attendance." });
+      }
+      if (normalize(initialBooking.status) !== "pending") {
+        return res.status(409).json({ message: "Only pending bookings may be rescheduled." });
+      }
+
+      // Pre-flight 24-hour cutoff check on existing test in Asia/Dhaka time
+      const initialDhakaDate = toDhakaDate(initialBooking.bookingDate);
+      const initialClockTime = initialBooking.location === "Home" ? initialBooking.testTime : initialBooking.startTime;
+      const initialStart = parseDhakaDateTime(initialDhakaDate, initialClockTime);
+      const preflightNowMs = Date.now();
+
+      if (!initialStart.ok || initialStart.ms - preflightNowMs < 24 * 60 * 60 * 1000) {
+        return res.status(400).json({
+          message: "Bookings can only be rescheduled at least 24 hours before the scheduled test time.",
+        });
+      }
+
+      // Initial parameters validation based on location
+      const bodyScheduleId = req.body?.newScheduleId;
+      const bodySlotId = req.body?.newSlotId;
+      const bodyBookingDate = req.body?.newBookingDate;
+      const bodyTestTime = req.body?.newTestTime;
+
+      if (initialBooking.location === "Test Center") {
+        if (!bodyScheduleId || bodySlotId === undefined || bodySlotId === null || String(bodySlotId).trim() === "") {
+          return res.status(400).json({ message: "Missing replacement schedule or slot identifier." });
+        }
+        if (!ObjectId.isValid(bodyScheduleId)) {
+          return res.status(400).json({ message: "Invalid schedule ID format." });
+        }
+      } else if (initialBooking.location === "Home") {
+        if (!bodyBookingDate || !bodyTestTime) {
+          return res.status(400).json({ message: "Please select a replacement booking date and test time." });
+        }
+        const parsedTarget = parseDhakaDateTime(bodyBookingDate, bodyTestTime);
+        if (!parsedTarget.ok) {
+          return res.status(400).json({ message: INVALID_TEST_TIME_MESSAGE });
+        }
+        if (toDhakaDate(initialBooking.bookingDate) === bodyBookingDate && String(initialBooking.testTime).trim() === String(bodyTestTime).trim()) {
+          return res.status(400).json({ message: "Selected date and time are identical to your current booking." });
+        }
+      } else {
+        return res.status(400).json({ message: "Unrecognised booking location." });
+      }
+
+      // -----------------------------------------------------------------------
+      // FIX C: TRANSACTION-CONSISTENT VALIDATION AND EXECUTION WITH SPLIT RETRIES
+      // -----------------------------------------------------------------------
+      const session = client.startSession();
+      const MAX_TX_RETRIES = 3;
+      const MAX_COMMIT_RETRIES = 3;
+      let txAttempts = 0;
+      const rescheduleOpId = crypto.randomUUID();
+
+      try {
+        while (txAttempts < MAX_TX_RETRIES) {
+          txAttempts++;
+          session.startTransaction();
+
+          try {
+            // 1. RE-READ AND RE-VALIDATE ORIGINAL BOOKING UNDER SESSION
+            const freshBooking = await bookingMockCollection.findOne(
+              { _id: new ObjectId(bookingId) },
+              { session }
+            );
+            if (!freshBooking || isCancelledBooking(freshBooking)) {
+              await session.abortTransaction();
+              return res.status(404).json({ message: "Active booking not found." });
+            }
+            if (freshBooking.userId !== String(req.user.userId)) {
+              await session.abortTransaction();
+              return res.status(403).json({ message: "You are not authorized to reschedule this booking." });
+            }
+            if (hasRecordedAttendance(freshBooking)) {
+              await session.abortTransaction();
+              return res.status(409).json({ message: "Cannot reschedule a booking with recorded attendance." });
+            }
+            if (normalize(freshBooking.status) !== "pending") {
+              await session.abortTransaction();
+              return res.status(409).json({ message: "Only pending bookings may be rescheduled." });
+            }
+
+            // Detect concurrent modifications that occurred since initial pre-flight read
+            if (
+              (initialBooking.rescheduleCount || 0) !== (freshBooking.rescheduleCount || 0) ||
+              String(initialBooking.scheduleId || "") !== String(freshBooking.scheduleId || "") ||
+              String(initialBooking.slotId || "") !== String(freshBooking.slotId || "") ||
+              String(initialBooking.bookingDate || "") !== String(freshBooking.bookingDate || "")
+            ) {
+              await session.abortTransaction();
+              return res.status(409).json({ message: "Booking was concurrently modified. Please refresh and try again." });
+            }
+
+            // 2. RE-VALIDATE 24-HOUR NOTICE AT CURRENT TRANSACTION INSTANT
+            const freshDhakaDate = toDhakaDate(freshBooking.bookingDate);
+            const freshClockTime = freshBooking.location === "Home" ? freshBooking.testTime : freshBooking.startTime;
+            const freshStart = parseDhakaDateTime(freshDhakaDate, freshClockTime);
+            const currentTxNow = Date.now();
+
+            if (!freshStart.ok || freshStart.ms - currentTxNow < 24 * 60 * 60 * 1000) {
+              await session.abortTransaction();
+              return res.status(400).json({
+                message: "Bookings can only be rescheduled at least 24 hours before the scheduled test time.",
+              });
+            }
+
+            // -----------------------------------------------------------------
+            // FIX 2: RE-VALIDATE TARGET ACCOUNT & SERIALIZE PER-STUDENT MUTATIONS
+            // -----------------------------------------------------------------
+            const userQuery = ObjectId.isValid(freshBooking.userId)
+              ? { _id: new ObjectId(freshBooking.userId) }
+              : { _id: freshBooking.userId };
+
+            const freshUser = await usersCollection.findOne(
+              userQuery,
+              { session }
+            );
+            if (!freshUser || !isCompletedAccount(freshUser)) {
+              await session.abortTransaction();
+              return res.status(403).json({ message: ACCOUNT_NOT_APPROVED_MESSAGE });
+            }
+
+            // Transactional per-student serialization point:
+            // Prevents concurrent Home bookings or reschedules for the same student
+            // from bypassing the one-active-booking-per-date constraint.
+            const userLockResult = await usersCollection.updateOne(
+              {
+                ...userQuery,
+                status: COMPLETED_STATUS_FILTER,
+              },
+              {
+                $set: { lastBookingActivityAt: new Date() },
+              },
+              { session }
+            );
+            if (userLockResult.matchedCount === 0) {
+              await session.abortTransaction();
+              return res.status(403).json({ message: ACCOUNT_NOT_APPROVED_MESSAGE });
+            }
+
+            let authoritativeDate;
+            let authoritativeStart;
+            let authoritativeEnd;
+            let authoritativeVenue;
+            let targetSlotIdentifier = null;
+            let seatRestoreAction = null;
+
+            if (freshBooking.location === "Test Center") {
+              const targetSchedule = await schedulesCollection.findOne(
+                { _id: new ObjectId(bodyScheduleId) },
+                { session }
+              );
+              if (!targetSchedule || normalize(targetSchedule.status) === CANCELLED_STATUS) {
+                await session.abortTransaction();
+                return res.status(404).json({ message: SCHEDULE_UNAVAILABLE_MESSAGE });
+              }
+
+              // Verify Course (transaction-consistent)
+              const scheduleCourse = await resolveScheduleCourse(targetSchedule, session);
+              if (!scheduleCourse.ok || normalizeCourseName(scheduleCourse.name) !== normalizeCourseName(freshBooking.name)) {
+                await session.abortTransaction();
+                return res.status(400).json({ message: "Selected schedule does not match the booked course." });
+              }
+
+              // Verify Mode
+              const scheduleMode = normalizeMode(targetSchedule.testType ?? "");
+              if (scheduleMode && scheduleMode !== normalizeMode(freshBooking.testType)) {
+                await session.abortTransaction();
+                return res.status(400).json({ message: "Selected schedule does not match the booked test mode." });
+              }
+
+              // Locate Slot
+              const targetSlot = (targetSchedule.timeSlots || []).find(
+                (s) => s && String(s.slotId).trim() === String(bodySlotId).trim()
+              );
+              if (!targetSlot || Number(targetSlot.slot) < 1) {
+                await session.abortTransaction();
+                return res.status(409).json({ message: "Selected time slot is fully booked." });
+              }
+
+              // Same-Slot Check
+              if (String(freshBooking.scheduleId) === String(bodyScheduleId) && String(freshBooking.slotId) === String(targetSlot.slotId)) {
+                await session.abortTransaction();
+                return res.status(400).json({ message: "Selected time slot is identical to your current booking." });
+              }
+
+              // Pre-validate Old Seat Restoration under session
+              const freshSeatCheck = await resolveSeatRestoration({
+                booking: freshBooking,
+                schedulesCollection,
+                session,
+              });
+              if (!freshSeatCheck.ok) {
+                await session.abortTransaction();
+                return res.status(409).json({ message: freshSeatCheck.message });
+              }
+              seatRestoreAction = freshSeatCheck.seatRestore;
+
+              authoritativeDate = targetSchedule.startDate;
+              authoritativeStart = targetSlot.startTime;
+              authoritativeEnd = targetSlot.endTime;
+              authoritativeVenue = targetSchedule.venue || targetSchedule.location;
+              targetSlotIdentifier = targetSlot.slotId;
+
+            } else if (freshBooking.location === "Home") {
+              if (toDhakaDate(freshBooking.bookingDate) === bodyBookingDate && String(freshBooking.testTime).trim() === String(bodyTestTime).trim()) {
+                await session.abortTransaction();
+                return res.status(400).json({ message: "Selected date and time are identical to your current booking." });
+              }
+
+              // Course lookup under session for consistency
+              const course = await findCourseByName(freshBooking.name, session);
+              if (!course || !isHomeBookingAllowed(course, [freshBooking.testSystem, freshBooking.testType])) {
+                await session.abortTransaction();
+                return res.status(400).json({
+                  message: "This course is not available for Home-based mock tests with the selected test system.",
+                });
+              }
+
+              authoritativeDate = bodyBookingDate;
+              authoritativeStart = bodyTestTime;
+            }
+
+            // 4. RE-VALIDATE REPLACEMENT INSTANT & 24H LEAD TIME
+            const replacementStart = parseDhakaDateTime(authoritativeDate, authoritativeStart);
+            if (!replacementStart.ok || replacementStart.ms - currentTxNow < 24 * 60 * 60 * 1000) {
+              await session.abortTransaction();
+              return res.status(400).json({ message: "Replacement test must be scheduled at least 24 hours in advance." });
+            }
+
+            // 5. RE-VALIDATE PROJECTED MR ENTITLEMENT UNDER SESSION
+            const freshActive = await activeBookingsFor(freshBooking.userId, session);
+            const freshProjected = freshActive.filter((b) => String(b._id) !== String(freshBooking._id));
+            const freshEntitlement = evaluateEntitlement({
+              mocks: freshUser.mocks,
+              course: normalizeCourseName(freshBooking.name),
+              mode: normalizeMode(freshBooking.testType),
+              testStartMs: replacementStart.ms,
+              bookings: freshProjected,
+            });
+            if (!freshEntitlement.eligible) {
+              await session.abortTransaction();
+              return res.status(400).json({ message: "Your mock entitlement does not cover the replacement test date." });
+            }
+
+            // -----------------------------------------------------------------
+            // FIX B: HOME BOOKING DUPLICATE RULE PRESERVES SAME-DAY ONE-BOOKING
+            // -----------------------------------------------------------------
+            const duplicateQuery = freshBooking.location === "Home"
+              ? {
+                  _id: { $ne: freshBooking._id },
+                  userId: freshBooking.userId,
+                  bookingDate: authoritativeDate,
+                  location: "Home",
+                  ...ACTIVE_BOOKING_FILTER,
+                }
+              : {
+                  _id: { $ne: freshBooking._id },
+                  userId: freshBooking.userId,
+                  scheduleId: bodyScheduleId,
+                  bookingDate: authoritativeDate,
+                  slotId: targetSlotIdentifier,
+                  ...ACTIVE_BOOKING_FILTER,
+                };
+            const freshDuplicate = await bookingMockCollection.findOne(duplicateQuery, { session });
+            if (freshDuplicate) {
+              await session.abortTransaction();
+              return res.status(400).json({
+                message: freshBooking.location === "Home"
+                  ? "You already have an active Home mock test booked for this date."
+                  : "You already have an active booking for this time slot.",
+              });
+            }
+
+            // 6. ATOMIC SEAT SWAPS (TEST CENTER ONLY)
+            if (freshBooking.location === "Test Center") {
+              // Decrement NEW slot (guard with slot > 0)
+              const claimResult = await schedulesCollection.updateOne(
+                {
+                  _id: new ObjectId(bodyScheduleId),
+                  timeSlots: { $elemMatch: { slotId: targetSlotIdentifier, slot: { $gt: 0 } } },
+                },
+                { $inc: { "timeSlots.$.slot": -1 } },
+                { session }
+              );
+              if (claimResult.modifiedCount === 0) {
+                await session.abortTransaction();
+                return res.status(409).json({ message: "This time slot was just taken. Please pick another." });
+              }
+
+              // Restore OLD seat (guard with exact observed counter)
+              const { scheduleObjectId, slotId: oldSlotId, observedSlot } = seatRestoreAction;
+              const releaseResult = await schedulesCollection.updateOne(
+                {
+                  _id: scheduleObjectId,
+                  timeSlots: { $elemMatch: { slotId: oldSlotId, slot: observedSlot } },
+                },
+                { $inc: { "timeSlots.$.slot": 1 } },
+                { session }
+              );
+              if (releaseResult.modifiedCount === 0) {
+                await session.abortTransaction();
+                return res.status(409).json({ message: "Unable to restore previous seat counter safely." });
+              }
+            }
+
+            // 7. CONDITIONAL BOOKING UPDATE DETECTING ANY CONCURRENT MODIFICATION
+            const currentCount = freshBooking.rescheduleCount;
+            const countPredicate = currentCount === undefined || currentCount === null
+              ? { $or: [{ rescheduleCount: { $exists: false } }, { rescheduleCount: null }, { rescheduleCount: 0 }] }
+              : { rescheduleCount: currentCount };
+
+            const conditionalFilter = {
+              _id: freshBooking._id,
+              userId: String(req.user.userId),
+              status: "pending",
+              attendance: { $not: RECORDED_ATTENDANCE_PATTERN },
+              bookingDate: freshBooking.bookingDate,
+              scheduleId: freshBooking.scheduleId ?? null,
+              slotId: freshBooking.slotId ?? null,
+              ...(freshBooking.location === "Home"
+                ? { testTime: freshBooking.testTime ?? null }
+                : { startTime: freshBooking.startTime ?? null }),
+              ...countPredicate,
+            };
+
+            const updateOp = {
+              $set: {
+                bookingDate: authoritativeDate,
+                ...(freshBooking.location === "Test Center"
+                  ? {
+                      startTime: authoritativeStart,
+                      endTime: authoritativeEnd,
+                      scheduleId: bodyScheduleId,
+                      slotId: targetSlotIdentifier,
+                    }
+                  : {
+                      testTime: authoritativeStart,
+                    }),
+                rescheduledAt: new Date(),
+                lastRescheduleOpId: rescheduleOpId,
+                lastIdempotencyKey: idempotencyKey || null,
+                lastIdempotencyHash: idempotencyKey ? requestHash : null,
+              },
+              $inc: { rescheduleCount: 1 },
+              $push: {
+                rescheduleHistory: {
+                  previousBookingDate: freshBooking.bookingDate,
+                  previousStartTime: freshBooking.startTime || null,
+                  previousTestTime: freshBooking.testTime || null,
+                  previousScheduleId: freshBooking.scheduleId || null,
+                  previousSlotId: freshBooking.slotId || null,
+                  rescheduledAt: new Date(),
+                  rescheduleOpId,
+                  idempotencyKey: idempotencyKey || null,
+                  requestHash: idempotencyKey ? requestHash : null,
+                },
+              },
+            };
+
+            const updateResult = await bookingMockCollection.updateOne(conditionalFilter, updateOp, { session });
+            if (updateResult.modifiedCount === 0) {
+              await session.abortTransaction();
+              return res.status(409).json({ message: "Booking was concurrently modified. Please refresh and try again." });
+            }
+
+            // -----------------------------------------------------------------
+            // FIX E: BOUNDED COMMIT RETRIES & OPERATION-ID RECONCILIATION
+            // -----------------------------------------------------------------
+            let commitAttempts = 0;
+            let committed = false;
+            while (commitAttempts < MAX_COMMIT_RETRIES) {
+              try {
+                await session.commitTransaction();
+                committed = true;
+                break;
+              } catch (commitErr) {
+                commitAttempts++;
+                if (isUnknownCommitResult(commitErr) && commitAttempts < MAX_COMMIT_RETRIES) {
+                  continue; // Retry commit on SAME session
+                }
+                if (isUnknownCommitResult(commitErr)) {
+                  // Attempt durable state reconciliation using unique operation ID
+                  const reconciled = await bookingMockCollection.findOne({
+                    _id: freshBooking._id,
+                    lastRescheduleOpId: rescheduleOpId,
+                  });
+                  if (reconciled) {
+                    committed = true;
+                    break;
+                  }
+                  return res.status(503).json({
+                    message: "The outcome of the reschedule could not be determined. Please verify your reservation status before retrying.",
+                    code: "COMMITTED_OR_UNCERTAIN",
+                  });
+                }
+                throw commitErr;
+              }
+            }
+
+            if (committed) {
+              try {
+                waitUntil(sendBookingConfirmationEmail(freshUser, { ...freshBooking, ...updateOp.$set }));
+              } catch {}
+              return res.status(200).json({
+                success: true,
+                message: "Booking successfully rescheduled.",
+                bookingRecord: { ...freshBooking, ...updateOp.$set },
+              });
+            }
+
+          } catch (txErr) {
+            if (session.inTransaction()) {
+              try { await session.abortTransaction(); } catch {}
+            }
+            if (isTransientTransactionError(txErr) && txAttempts < MAX_TX_RETRIES) {
+              await new Promise((r) => setTimeout(r, 50 * Math.pow(2, txAttempts) + Math.random() * 50));
+              continue; // Retry entire transaction from beginning with fresh reads
+            }
+            if (isTransientTransactionError(txErr)) {
+              return res.status(409).json({ message: BOOKING_CONFLICT_MESSAGE });
+            }
+            throw txErr;
+          }
+        }
+        return res.status(409).json({ message: BOOKING_CONFLICT_MESSAGE });
+      } finally {
+        try { await session.endSession(); } catch {}
+      }
+    } catch (error) {
+      console.error("Error rescheduling booking:", error);
+      res.status(500).json({ success: false, message: "Internal server error" });
+    }
+  });
+
   const CONTINUATION_HEADER = "x-reminder-continuation";
   const CANCELLED_REMINDER_FILTER = { status: { $ne: CANCELLED_STATUS } };
 
@@ -966,12 +1512,20 @@ module.exports = ({ usersCollection, schedulesCollection, bookingMockCollection,
 
     try {
       if (!await reminderDelivery.hasRequiredUniqueIndex(reminderDeliveriesCollection)) {
-        return res.status(503).json({ message: "Reminder delivery is temporarily unavailable." });
+        console.error("[send-reminder] REMINDER_INDEX_NOT_READY: reminderDeliveries unique compound index {scheduleId,userId} is missing or inaccessible.");
+        return res.status(503).json({ message: "Reminder delivery is temporarily unavailable.", errorCategory: "REMINDER_INDEX_NOT_READY" });
       }
       const publicApiUrl = reminderDelivery.configuredPublicApiUrl(process.env.PUBLIC_API_URL);
       const continuationSecret = process.env.CRON_SECRET;
-      if (!publicApiUrl || !continuationSecret) {
-        return res.status(503).json({ message: "Reminder delivery is temporarily unavailable." });
+      if (!publicApiUrl) {
+        const rawUrl = process.env.PUBLIC_API_URL;
+        const category = rawUrl ? "REMINDER_PUBLIC_API_URL_INVALID" : "REMINDER_PUBLIC_API_URL_MISSING";
+        console.error(`[send-reminder] ${category}: PUBLIC_API_URL is ${rawUrl ? "present but invalid" : "not configured"}.`);
+        return res.status(503).json({ message: "Reminder delivery is temporarily unavailable.", errorCategory: category });
+      }
+      if (!continuationSecret) {
+        console.error("[send-reminder] REMINDER_CONTINUATION_SECRET_MISSING: CRON_SECRET is not configured.");
+        return res.status(503).json({ message: "Reminder delivery is temporarily unavailable.", errorCategory: "REMINDER_CONTINUATION_SECRET_MISSING" });
       }
       const schedule = await schedulesCollection.findOne({ _id: new ObjectId(scheduleId) });
       if (!schedule) return res.status(404).json({ message: "Schedule not found." });
@@ -1191,7 +1745,7 @@ module.exports = ({ usersCollection, schedulesCollection, bookingMockCollection,
     const BOOKING_PROJECTION = {
       _id: 1, userId: 1, scheduleId: 1, slotId: 1, name: 1, testType: 1, testSystem: 1,
       location: 1, bookingDate: 1, testTime: 1, startTime: 1, endTime: 1,
-      status: 1, attendance: 1, trfEmailed: 1, trfEmailAt: 1,
+      status: 1, attendance: 1, trfEmailed: 1, trfEmailAt: 1, lastIdempotencyKey: 1,
     };
     try {
       // Students see only live bookings. Cancelled rows are deliberately kept
@@ -1287,7 +1841,7 @@ module.exports = ({ usersCollection, schedulesCollection, bookingMockCollection,
       const projection = {
         _id: 1, userId: 1, scheduleId: 1, slotId: 1, name: 1, testType: 1, testSystem: 1,
         location: 1, bookingDate: 1, testTime: 1, startTime: 1, endTime: 1,
-        status: 1, attendance: 1, trfEmailed: 1, trfEmailAt: 1,
+        status: 1, attendance: 1, trfEmailed: 1, trfEmailAt: 1, lastIdempotencyKey: 1,
       };
 
       const [bookings, total] = await Promise.all([
