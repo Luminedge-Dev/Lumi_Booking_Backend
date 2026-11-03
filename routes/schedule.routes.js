@@ -33,17 +33,11 @@ async function getMaxSlotIdAcrossDocs(col, key) {
       {
         $project: {
           n: {
-            $toInt: {
-              $ifNull: [
-                {
-                  $cond: [
-                    { $isNumber: "$timeSlots.slotId" },
-                    "$timeSlots.slotId",
-                    { $toInt: { $ifNull: ["$timeSlots.slotId", 0] } },
-                  ],
-                },
-                0,
-              ],
+            $convert: {
+              input: "$timeSlots.slotId",
+              to: "int",
+              onError: 0,
+              onNull: 0,
             },
           },
         },
@@ -125,30 +119,112 @@ module.exports = ({ schedulesCollection, coursesCollection }) => {
     }
   });
 
+  const IELTS_BASE_ID = "67337c880794d577cd982b75";
+  const IELTS_CD_ID = "6742b783d2f5950620f6df21";
+
+  const buildCourseIdQueryValues = (courseId) => {
+    const raw = String(courseId || "").trim();
+    const set = new Set([raw]);
+    if (raw === IELTS_BASE_ID || raw === IELTS_CD_ID) {
+      set.add(IELTS_BASE_ID);
+      set.add(IELTS_CD_ID);
+    }
+    const values = [];
+    for (const id of set) {
+      if (id) {
+        values.push(id);
+        if (ObjectId.isValid(id)) {
+          values.push(new ObjectId(id));
+        }
+      }
+    }
+    return values;
+  };
+
+  // Get monthly schedule availability for course (calendar highlighting)
+  router.get("/schedule/course/:courseId", verifyToken, async (req, res) => {
+    try {
+      const { courseId } = req.params;
+      const { month } = req.query;
+
+      const courseValues = buildCourseIdQueryValues(courseId);
+      const match = {
+        courseId: { $in: courseValues },
+        status: { $nin: ["Cancelled", "cancelled", "CANCELLED"] },
+      };
+
+      if (month && /^\d{4}-\d{2}$/.test(String(month).trim())) {
+        const m = String(month).trim();
+        match.$or = [
+          { startDate: { $regex: `^${m}` } },
+          {
+            $and: [
+              { startDate: { $lte: `${m}-31` } },
+              { endDate: { $gte: `${m}-01` } },
+            ],
+          },
+        ];
+      }
+
+      const schedules = await schedulesCollection
+        .find(match, {
+          projection: {
+            _id: 1,
+            courseId: 1,
+            name: 1,
+            testType: 1,
+            testSystem: 1,
+            startDate: 1,
+            endDate: 1,
+            status: 1,
+            venue: 1,
+            timeSlots: 1,
+          },
+        })
+        .toArray();
+
+      res.json({ success: true, schedules });
+    } catch (e) {
+      console.error("schedule by course error:", e);
+      res.status(500).json({ success: false, message: "Failed to load course schedules" });
+    }
+  });
+
   // Get schedule by date + courseId
   router.get("/schedule/:date/:courseId", verifyToken, async (req, res) => {
     try {
       const { date, courseId } = req.params;
+      const courseValues = buildCourseIdQueryValues(courseId);
+
+      const matchClause = {
+        courseId: { $in: courseValues },
+        status: { $nin: ["Cancelled", "cancelled", "CANCELLED"] },
+        $or: [
+          { startDate: date },
+          { startDate: { $regex: `^${date}` } },
+          {
+            $and: [
+              { startDate: { $lte: date } },
+              { endDate: { $gte: date } },
+            ],
+          },
+        ],
+      };
+
       const schedules = await schedulesCollection
         .aggregate([
-          { $match: { courseId, startDate: date, endDate: date, status: { $ne: "Cancelled" } } },
+          { $match: matchClause },
           {
             $addFields: {
               _slotIdNum: {
                 $cond: [
-                  { $gt: [{ $size: "$timeSlots" }, 0] },
+                  { $gt: [{ $size: { $ifNull: ["$timeSlots", []] } }, 0] },
                   {
-                    $toInt: {
-                      $ifNull: [
-                        {
-                          $cond: [
-                            { $isNumber: { $arrayElemAt: ["$timeSlots.slotId", 0] } },
-                            { $arrayElemAt: ["$timeSlots.slotId", 0] },
-                            { $toInt: { $arrayElemAt: ["$timeSlots.slotId", 0] } },
-                          ],
-                        },
-                        0,
-                      ],
+                    $convert: {
+                      input: { $arrayElemAt: ["$timeSlots.slotId", 0] },
+                      to: "int",
+                      onError: 0,
+                      onNull: 0,
                     },
                   },
                   0,

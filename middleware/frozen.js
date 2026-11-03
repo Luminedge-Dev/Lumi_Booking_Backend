@@ -20,6 +20,7 @@ const FROZEN_WRITE_PATHS = Object.freeze([
   { method: "POST", path: /^\/api\/v1\/user\/book-slot\/?$/i },
   { method: "DELETE", path: /^\/api\/v1\/bookings\/[^/]+\/?$/i },
   { method: "POST", path: /^\/api\/v1\/admin\/create-schedule\/?$/i },
+  { method: "PATCH", path: /^\/api\/v1\/user\/bookings\/[^/]+\/reschedule\/?$/i },
 ]);
 
 function isFrozenWriteRequest(req) {
